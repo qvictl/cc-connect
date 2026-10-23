@@ -5083,6 +5083,11 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 
 	events := agentSession.Events()
 
+	// Questions are answered while the reader keeps reading; see
+	// unsolicitedQuestions.
+	questions := e.newUnsolicitedQuestions(state, agentSession)
+	defer questions.withdraw()
+
 	var turnActive bool // true after first event, cleared on EventResult
 	defer func() {
 		if turnActive {
@@ -5146,6 +5151,9 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 			// channel state is clean because it just took ownership.
 			flushPartial("cancelled")
 			return
+
+		case <-questions.answered():
+			questions.next(ctx)
 
 		case event, ok := <-events:
 			if !ok {
@@ -5212,7 +5220,7 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 			// A question is for the user to answer, not a permission to deny
 			// on their behalf; ask it as a foreground turn would.
 			if isAskQuestionRequest(event) {
-				e.askUnsolicitedQuestion(ctx, state, agentSession, p, replyCtx, event)
+				questions.ask(event)
 				continue
 			}
 
