@@ -1308,8 +1308,10 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 
 	switch itemType {
 	case "collabAgentToolCall":
+		s.flushPendingAsThinking()
 		s.subagents.collab(item, s.emit)
 	case "subAgentActivity":
+		s.flushPendingAsThinking()
 		s.subagents.activity(item, s.emit)
 	case "reasoning":
 		text := appServerReasoningText(item)
