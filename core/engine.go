@@ -5245,6 +5245,9 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 			}
 
 			switch event.Type {
+			case EventCommentary:
+				e.relayCommentary(p, replyCtx, event.Content, workspaceDir)
+
 			case EventText:
 				if event.Content != "" {
 					textParts = append(textParts, event.Content)
@@ -5699,6 +5702,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			cardAnswerText.Reset()
 			lastRichCardUpdate = time.Time{}
 			lastRichCardLen = 0
+
+		case EventCommentary:
+			e.relayCommentary(p, replyCtx, event.Content, workspaceDir)
 
 		case EventThinking:
 			if isEllipsisOnly(event.Content) {
