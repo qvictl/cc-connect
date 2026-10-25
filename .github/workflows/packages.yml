@@ -1,0 +1,119 @@
+name: Packages
+
+# Build .deb and .rpm for the fork's dev branch, and attach them to releases.
+# cc-connect is pure Go (no cgo), so both packages are cross-built from the
+# ubuntu runner; the rpm is smoke-installed on a Fedora 43 container and the
+# deb on an Ubuntu 24.04 container before anything is published.
+
+on:
+  push:
+    branches: [dev]
+    tags: ["v*"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: deb + rpm
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Build web assets
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Package version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            version="${{ github.event.release.tag_name }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            version="${{ github.ref_name }}"
+          else
+            version="0.0.0~dev.$(git rev-parse --short HEAD)"
+          fi
+          version="${version#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "packaging ${version}"
+
+      - name: Build binary
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/pkg/usr/bin
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.commit=$(git rev-parse --short HEAD) -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o dist/pkg/usr/bin/cc-connect ./cmd/cc-connect
+          dist/pkg/usr/bin/cc-connect --version
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.1
+
+      - name: Build deb and rpm
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          export PATH="$(go env GOPATH)/bin:${PATH}"
+          NFPM_ARCH=amd64 VERSION="${VERSION}" nfpm package --config packaging/nfpm.yaml --packager deb --target "dist/cc-connect_${VERSION}_amd64.deb"
+          NFPM_ARCH=amd64 VERSION="${VERSION}" nfpm package --config packaging/nfpm.yaml --packager rpm --target "dist/cc-connect-${VERSION}.x86_64.rpm"
+          (cd dist && sha256sum cc-connect_* > checksums.txt)
+          ls -lh dist
+
+      - name: Smoke test deb on Ubuntu 24.04
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/dist:/dist" ubuntu:24.04 bash -euo pipefail -c '
+            apt-get update -qq && apt-get install -y -qq ./dist/cc-connect_*.deb >/dev/null
+            command -v cc-connect
+            cc-connect --version
+            dpkg -l cc-connect | grep ^ii'
+
+      - name: Smoke test rpm on Fedora 43
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/dist:/dist" fedora:43 bash -euo pipefail -c '
+            dnf install -y -q /dist/cc-connect-*.rpm
+            command -v cc-connect
+            cc-connect --version
+            rpm -q cc-connect'
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/cc-connect_*
+          if-no-files-found: error
+
+      - name: Attach packages to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/cc-connect_* dist/checksums.txt --clobber

@@ -1,0 +1,18 @@
+name: cc-connect
+arch: ${NFPM_ARCH}
+version: ${VERSION}
+maintainer: qvictl <141409325+qvictl@users.noreply.github.com>
+description: Bridge local AI coding agents to messaging platforms
+homepage: https://github.com/qvictl/cc-connect
+license: MIT
+section: utils
+contents:
+  - src: dist/pkg/usr/bin/cc-connect
+    dst: /usr/bin/cc-connect
+    file_info:
+      mode: 0755
+rpm:
+  group: Applications/System
+deb:
+  fields:
+    Priority: optional
