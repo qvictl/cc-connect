@@ -84,7 +84,7 @@ jobs:
           export PATH="$(go env GOPATH)/bin:${PATH}"
           NFPM_ARCH=amd64 VERSION="${VERSION}" nfpm package --config packaging/nfpm.yaml --packager deb --target "dist/cc-connect_${VERSION}_amd64.deb"
           NFPM_ARCH=amd64 VERSION="${VERSION}" nfpm package --config packaging/nfpm.yaml --packager rpm --target "dist/cc-connect-${VERSION}.x86_64.rpm"
-          (cd dist && sha256sum cc-connect_* > checksums.txt)
+          (cd dist && sha256sum cc-connect* > SHA256SUMS)
           ls -lh dist
 
       - name: Smoke test deb on Ubuntu 24.04
@@ -109,11 +109,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: packages
-          path: dist/cc-connect_*
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/SHA256SUMS
           if-no-files-found: error
 
       - name: Attach packages to the release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/cc-connect_* dist/checksums.txt --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/*.deb dist/*.rpm dist/SHA256SUMS --clobber
