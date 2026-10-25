@@ -578,7 +578,7 @@ func (cs *codexSession) handleItemStarted(raw map[string]any) {
 	itemType, _ := item["type"].(string)
 	slog.Debug("codexSession: item.started", "item_type", itemType)
 	if itemType == "collab_tool_call" {
-		cs.flushPendingAsThinking()
+		cs.flushPendingAsCommentary()
 		cs.handleCollabItem(item)
 		return
 	}

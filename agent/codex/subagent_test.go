@@ -164,8 +164,8 @@ func TestAppServerSubagents_CollaborationFlushesParentCommentary(t *testing.T) {
 			subagentNotification(s, "item/completed", `{"threadId":"parent","item":{"type":"agentMessage","text":"Final answer"}}`)
 			subagentNotification(s, "turn/completed", `{"threadId":"parent","turn":{"id":"parent-turn","status":"completed"}}`)
 			events := subagentEvents(s.events)
-			if len(events) != 4 || events[0].Type != core.EventThinking || events[0].Content != "I will delegate" || events[1].Type != core.EventSubagent || events[2].Type != core.EventText || events[2].Content != "Final answer" || events[3].Type != core.EventResult {
-				t.Fatalf("parent commentary must stay out of the answer: %+v", events)
+			if len(events) != 4 || events[0].Type != core.EventCommentary || events[0].Content != "I will delegate" || events[1].Type != core.EventSubagent || events[2].Type != core.EventText || events[2].Content != "Final answer" || events[3].Type != core.EventResult {
+				t.Fatalf("parent commentary must be delivered apart from the answer: %+v", events)
 			}
 		})
 	}

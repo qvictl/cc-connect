@@ -1265,11 +1265,11 @@ func (s *appServerSession) handleItemStarted(item map[string]any) {
 
 	switch itemType {
 	case "collabAgentToolCall":
-		s.flushPendingAsThinking()
+		s.flushPendingAsCommentary()
 		s.subagents.collab(item, s.emit)
 		return
 	case "subAgentActivity":
-		s.flushPendingAsThinking()
+		s.flushPendingAsCommentary()
 		s.subagents.activity(item, s.emit)
 		return
 	case "agentMessage", "reasoning", "userMessage", "plan", "hookPrompt", "contextCompaction":
@@ -1310,10 +1310,10 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 
 	switch itemType {
 	case "collabAgentToolCall":
-		s.flushPendingAsThinking()
+		s.flushPendingAsCommentary()
 		s.subagents.collab(item, s.emit)
 	case "subAgentActivity":
-		s.flushPendingAsThinking()
+		s.flushPendingAsCommentary()
 		s.subagents.activity(item, s.emit)
 	case "reasoning":
 		text := appServerReasoningText(item)

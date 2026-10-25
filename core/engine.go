@@ -3694,21 +3694,17 @@ found:
 		// All questions answered — build response and resolve
 		updatedInput := buildAskQuestionResponse(pending.ToolInput, pending.Questions, pending.Answers)
 
-		// A background question can be withdrawn concurrently; only the side
-		// that claims the request responds.
-		if !claimPending(state, pending) {
-			return true
-		}
-		if err := state.agentSession.RespondPermission(pending.RequestID, PermissionResult{
+		// Keep the question available for retry until the adapter accepts
+		// the answer; withdrawal and a successful response cannot both own it.
+		if submitted, err := respondPendingPermission(state, pending, PermissionResult{
 			Behavior:     "allow",
 			UpdatedInput: updatedInput,
-		}); err != nil {
+		}, false); err != nil {
 			slog.Error("failed to send AskUserQuestion response", "error", err)
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
-		} else {
+		} else if submitted {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", q.Question, answer))
 		}
-		pending.resolve()
 		return true
 	}
 
@@ -3745,6 +3741,10 @@ func respondPendingPermission(state *interactiveState, pending *pendingPermissio
 		state.mu.Unlock()
 		return false, nil
 	}
+	// Take the request off state while the adapter call is in flight so a
+	// concurrent withdrawal cannot answer it too. Put it back if the adapter
+	// rejects the answer, which keeps the question available for a retry.
+	state.pending = nil
 	pending.responding = true
 	agentSession := state.agentSession
 	state.mu.Unlock()
@@ -3752,12 +3752,13 @@ func respondPendingPermission(state *interactiveState, pending *pendingPermissio
 	err := agentSession.RespondPermission(pending.RequestID, result)
 	state.mu.Lock()
 	pending.responding = false
-	accepted := err == nil && state.pending == pending
+	accepted := err == nil
 	if accepted {
-		state.pending = nil
 		if approveAll {
 			state.approveAll = true
 		}
+	} else if state.pending == nil {
+		state.pending = pending
 	}
 	state.mu.Unlock()
 	if accepted {
