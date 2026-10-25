@@ -6,6 +6,7 @@ description: Bridge local AI coding agents to messaging platforms
 homepage: https://github.com/qvictl/cc-connect
 license: MIT
 section: utils
+priority: optional
 contents:
   - src: dist/pkg/usr/bin/cc-connect
     dst: /usr/bin/cc-connect
@@ -13,6 +14,3 @@ contents:
       mode: 0755
 rpm:
   group: Applications/System
-deb:
-  fields:
-    Priority: optional
