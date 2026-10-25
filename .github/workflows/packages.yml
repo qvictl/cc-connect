@@ -81,9 +81,11 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          export PATH="$(go env GOPATH)/bin:${PATH}"
-          NFPM_ARCH=amd64 VERSION="${VERSION}" nfpm package --config packaging/nfpm.yaml --packager deb --target "dist/cc-connect_${VERSION}_amd64.deb"
-          NFPM_ARCH=amd64 VERSION="${VERSION}" nfpm package --config packaging/nfpm.yaml --packager rpm --target "dist/cc-connect-${VERSION}.x86_64.rpm"
+          gopath="$(go env GOPATH)"
+          export PATH="${gopath}/bin:${PATH}"
+          export NFPM_ARCH=amd64
+          nfpm package --config packaging/nfpm.yaml --packager deb --target "dist/cc-connect_${VERSION}_amd64.deb"
+          nfpm package --config packaging/nfpm.yaml --packager rpm --target "dist/cc-connect-${VERSION}.x86_64.rpm"
           (cd dist && sha256sum cc-connect* > SHA256SUMS)
           ls -lh dist
 
