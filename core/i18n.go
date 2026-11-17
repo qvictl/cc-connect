@@ -812,11 +812,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "📬 Mensaje recibido — se procesará después de que termine la tarea actual.",
 	},
 	MsgMessageInjected: {
-		LangEnglish:            "📎 Added to the current task.",
-		LangChinese:            "📎 已补充到当前任务。",
-		LangTraditionalChinese: "📎 已補充到目前任務。",
-		LangJapanese:           "📎 現在のタスクに追加しました。",
-		LangSpanish:            "📎 Añadido a la tarea en curso.",
+		LangEnglish:            "📎✅ Added to the current task — continuing.",
+		LangChinese:            "📎✅ 已加入当前任务，继续执行中…",
+		LangTraditionalChinese: "📎✅ 已加入目前任務，繼續執行中…",
+		LangJapanese:           "📎✅ 現在のタスクに追加しました。続行します…",
+		LangSpanish:            "📎✅ Añadido a la tarea en curso — continuando…",
 	},
 	MsgQueueFull: {
 		LangEnglish:            "📬 Message queue is full (%d pending). Please wait for current tasks to complete.",

@@ -661,7 +661,11 @@ func (cs *claudeSession) handleReadLoopLine(line string) {
 	// released before anything else the stream says.
 	if subtype, _ := raw["subtype"].(string); eventType == "system" && subtype == "init" {
 		cs.followUpTurnStarted()
-	} else if eventType != "rate_limit_event" {
+	} else if eventType != "rate_limit_event" && eventType != "result" {
+		// Do not release a held result on a result event: deliverResult owns
+		// that decision, and a second result can be a follow-up turn whose
+		// system init was missed or delayed. Compaction results are likewise
+		// not turn terminators.
 		cs.releaseHeldResult()
 	}
 
@@ -1679,12 +1683,22 @@ var followUpTurnWindow = 2 * time.Second
 // result instead; that turn is merged into the running one (see
 // deliverResult), so the engine still sees exactly one EventResult.
 func (cs *claudeSession) SendMidTurn(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
-	if err := cs.Send(prompt, messageID, images, files); err != nil {
-		return err
-	}
+	// Count the message before writing it: the read loop can receive the
+	// current turn's result while Send is still writing to stdin. If the
+	// counter is bumped after Send returns, deliverResult sees zero and emits
+	// that result immediately; the follow-up turn's result is then treated as
+	// the next turn and every later reply is shifted.
 	cs.midTurnMu.Lock()
 	cs.midTurnPending++
 	cs.midTurnMu.Unlock()
+	if err := cs.Send(prompt, messageID, images, files); err != nil {
+		cs.midTurnMu.Lock()
+		if cs.midTurnPending > 0 {
+			cs.midTurnPending--
+		}
+		cs.midTurnMu.Unlock()
+		return err
+	}
 	return nil
 }
 
@@ -1701,6 +1715,16 @@ func (cs *claudeSession) deliverResult(evt core.Event) {
 		evt = mergeTurnResults(*prev, evt)
 	}
 	if cs.midTurnPending > 0 {
+		// A second result can arrive before the first held result is merged
+		// (e.g. a CLI that omits system init between follow-up turns). Merge
+		// instead of overwriting, and stop the old timer so it cannot release
+		// the newer result early.
+		if cs.heldResult != nil {
+			evt = mergeTurnResults(*cs.heldResult, evt)
+			if cs.heldTimer != nil {
+				cs.heldTimer.Stop()
+			}
+		}
 		cs.heldResult = &evt
 		cs.heldTimer = time.AfterFunc(followUpTurnWindow, cs.releaseHeldResult)
 		cs.midTurnMu.Unlock()
