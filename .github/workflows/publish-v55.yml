@@ -25,33 +25,33 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api repos/qvictl/cc-connect/actions/runs/44279851542 > run.json
-          jq -e '.conclusion == "success" and .head_sha == "cc28b28710861def4bb0ab122dad88e465cd431d"' run.json
+          gh api repos/qvictl/cc-connect/actions/runs/44290882807 > run.json
+          jq -e '.conclusion == "success" and .head_sha == "41d7e57718523c9670db11ad1ebdb5f6a4953018"' run.json
       - uses: actions/download-artifact@v4
         with:
-          name: candidate-source-44279851542
-          run-id: 44279851542
+          name: candidate-source-44290882807
+          run-id: 44290882807
           github-token: ${{ github.token }}
       - id: source
         name: Verify tested source and create exact source commit
         run: |
           set -euo pipefail
-          echo '7e07b7595c8a1effd5edb8e062e91b9a7949c99341c8fb895bd55428ef9baf69  candidate-source.tar.gz' | sha256sum -c -
-          grep -Fx 'manifest_sha256=e562111af802c5df31d74f559a1df20dad01e072e94f6e10a718146549e05f05' SOURCE-PROVENANCE.txt
+          echo '38c988469782bf29b985e8992fb51ff7436eae7bde0ac1609970f88a8f8e400a  candidate-source.tar.gz' | sha256sum -c -
+          grep -Fx 'manifest_sha256=c100e694bdd44b3d94adf40885ef565fbff8c39b4184d188663888e26c6b8eb0' SOURCE-PROVENANCE.txt
           tar -xzf candidate-source.tar.gz
           cd candidate
           git init
           git config user.name qvictl
           git config user.email 141409325+qvictl@users.noreply.github.com
-          git fetch https://github.com/qvictl/cc-connect.git 7110ef22a2689775fb0ce6ee697315375c33b538
+          git fetch https://github.com/qvictl/cc-connect.git 68c3567bf0d28c802035f0957acaca33a775fb1a
           git add -f .
           tree=$(git write-tree)
-          test "$tree" = 8f46344462095b6007fc9fa5a23acb91329a96c4
-          source_commit=7110ef22a2689775fb0ce6ee697315375c33b538
+          test "$tree" = b03b984f39b8acd6278f125a53fa5c457b8c82cc
+          source_commit=68c3567bf0d28c802035f0957acaca33a775fb1a
           git update-ref refs/heads/release-source "$source_commit"
           git bundle create ../source.bundle refs/heads/release-source
           echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "release_tag=$TAG" "source_commit=$source_commit" "source_tree=$tree" "validated_run=https://github.com/qvictl/cc-connect/actions/runs/44279851542" >> ../SOURCE-PROVENANCE.txt
+          printf '%s\n' "release_tag=$TAG" "source_commit=$source_commit" "source_tree=$tree" "validated_run=https://github.com/qvictl/cc-connect/actions/runs/44290882807" >> ../SOURCE-PROVENANCE.txt
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -145,12 +145,12 @@ jobs:
           cd publish-source
           git fetch ../source.bundle refs/heads/release-source
           test "$(git rev-parse FETCH_HEAD)" = "$SOURCE_COMMIT"
-          test "$(git rev-parse FETCH_HEAD^{tree})" = 8f46344462095b6007fc9fa5a23acb91329a96c4
+          test "$(git rev-parse FETCH_HEAD^{tree})" = b03b984f39b8acd6278f125a53fa5c457b8c82cc
           test -z "$(git ls-remote https://github.com/qvictl/cc-connect.git refs/tags/$TAG)"
           git tag "$TAG" "$SOURCE_COMMIT"
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           echo "::add-mask::$auth"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push https://github.com/qvictl/cc-connect.git "refs/tags/$TAG:refs/tags/$TAG"
           cd ../candidate/dist
-          printf 'Fork integration v55. Linux amd64 only (deb and rpm).\n\nSource tree: 8f46344462095b6007fc9fa5a23acb91329a96c4\nSource commit: %s\nManifest SHA256: e562111af802c5df31d74f559a1df20dad01e072e94f6e10a718146549e05f05\n\nWeb tests, Windows cross-compilation, full Go build, tests, race tests and CUJ passed in https://github.com/qvictl/cc-connect/actions/runs/44279851542 . Versioned packages rebuilt from that exact source tree and installation-smoked on Ubuntu 24.04 and Fedora 43. Credential-gated live tests were not enabled.\n' "$SOURCE_COMMIT" > RELEASE-NOTES.txt
+          printf 'Fork integration v55. Linux amd64 only (deb and rpm).\n\nSource tree: b03b984f39b8acd6278f125a53fa5c457b8c82cc\nSource commit: %s\nManifest SHA256: c100e694bdd44b3d94adf40885ef565fbff8c39b4184d188663888e26c6b8eb0\n\nRequired real-CLI fake-model blackbox permission smoke, Web tests, Windows cross-compilation, full Go build, tests, race tests and CUJ passed in https://github.com/qvictl/cc-connect/actions/runs/44290882807 . Versioned packages rebuilt from that exact source tree and installation-smoked on Ubuntu 24.04 and Fedora 43. Credential-gated live tests were not enabled.\n' "$SOURCE_COMMIT" > RELEASE-NOTES.txt
           gh release create "$TAG" --repo qvictl/cc-connect --verify-tag --prerelease --title "cc-connect fork integration v55" --notes-file RELEASE-NOTES.txt ./*.deb ./*.rpm SHA256SUMS VERSION.txt SOURCE-PROVENANCE.txt
