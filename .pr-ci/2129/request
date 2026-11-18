@@ -1,0 +1,1 @@
+review-validation-2: web package has no test script; retain tsc + vite build
