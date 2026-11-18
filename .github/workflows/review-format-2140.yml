@@ -1,0 +1,46 @@
+name: Format PR 2140 review fixes
+on:
+  push:
+    branches: [ci/integrated-candidate-20261118]
+    paths: ['.review-format/2140/**']
+permissions:
+  contents: read
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reconstruct exact input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd .review-format/2140
+          gzip -dk reconstruction.json.gz
+          sha256sum -c manifest.sha256
+          cd ../..
+          python3 .ci/reconstruct.py .review-format/2140/reconstruction.json "$(cut -d' ' -f1 .review-format/2140/manifest.sha256)" candidate
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: candidate/go.mod
+          cache: false
+      - name: Format reviewed files only
+        run: |
+          python3 - <<'PY'
+          import pathlib,subprocess,base64,gzip
+          root=pathlib.Path('candidate')
+          subprocess.run(['git','init','-q'],cwd=root,check=True)
+          subprocess.run(['git','add','-f','.'],cwd=root,check=True)
+          subprocess.run(['gofmt','-w',*["agent/opencode/delete_process_other.go","agent/opencode/delete_process_unix.go","agent/opencode/delete_session_test.go","agent/opencode/opencode.go","core/engine.go","core/interfaces.go","core/session.go","core/session_delete_timeout_test.go","core/switch_delete_feedback_test.go"]],cwd=root,check=True)
+          patch=subprocess.check_output(['git','diff','--binary'],cwd=root)
+          pathlib.Path('format.patch').write_bytes(patch)
+          print('FORMAT_PATCH_2140='+base64.b64encode(gzip.compress(patch)).decode())
+          print('Patch bytes:',len(patch))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-format-2140
+          path: format.patch
