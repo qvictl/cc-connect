@@ -93,7 +93,7 @@ jobs:
           ARCHIVE_SHA: ${{ needs.source.outputs.archive_sha }}
         run: |
           set -euo pipefail
-          printf '%s  candidate-source.tar.gz\\n' "$ARCHIVE_SHA" | sha256sum -c -
+          printf '%s  candidate-source.tar.gz\n' "$ARCHIVE_SHA" | sha256sum -c -
           rm -rf candidate
           tar -xzf candidate-source.tar.gz
       - name: Build candidate binary after tests
