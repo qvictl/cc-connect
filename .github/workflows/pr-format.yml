@@ -22,7 +22,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for item in 2129:44274297464 2140:44273382271; do
+          for item in 2145:44276589739 2137:44276589615; do
             pr=${item%:*}; run=${item#*:}
             gh run download "$run" --repo qvictl/cc-connect --name "candidate-source-$run" --dir "format/$pr"
           done
@@ -35,7 +35,7 @@ jobs:
           import json,gzip,hashlib,subprocess,pathlib,base64
           base=json.load(open('format/base.json')); assert not base['truncated']
           base={f['path']:f['sha'] for f in base['tree'] if f['type']=='blob'}
-          for pr in [2129,2140]:
+          for pr in [2145,2137]:
               p=pathlib.Path(f'format/{pr}');subprocess.run(['tar','-xzf','candidate-source.tar.gz'],cwd=p,check=True)
               root=p/'candidate';m=json.load(gzip.open(f'.pr-ci/{pr}/reconstruction.json.gz'))
               for f in m['files']:
