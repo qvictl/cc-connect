@@ -1,0 +1,46 @@
+name: Format PR 2085 review fixes
+on:
+  push:
+    branches: [ci/integrated-candidate-20261118]
+    paths: ['.review-format/2085/**']
+permissions:
+  contents: read
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reconstruct exact input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd .review-format/2085
+          gzip -dk reconstruction.json.gz
+          sha256sum -c manifest.sha256
+          cd ../..
+          python3 .ci/reconstruct.py .review-format/2085/reconstruction.json "$(cut -d' ' -f1 .review-format/2085/manifest.sha256)" candidate
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: candidate/go.mod
+          cache: false
+      - name: Format reviewed files only
+        run: |
+          python3 - <<'PY'
+          import pathlib,subprocess,base64,gzip
+          root=pathlib.Path('candidate')
+          subprocess.run(['git','init','-q'],cwd=root,check=True)
+          subprocess.run(['git','add','-f','.'],cwd=root,check=True)
+          subprocess.run(['gofmt','-w','agent/antigravity/output.go','agent/antigravity/output_test.go'],cwd=root,check=True)
+          patch=subprocess.check_output(['git','diff','--binary'],cwd=root)
+          pathlib.Path('format.patch').write_bytes(patch)
+          print('FORMAT_PATCH_2085='+base64.b64encode(gzip.compress(patch)).decode())
+          print('Patch bytes:',len(patch))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-format-2085
+          path: format.patch
