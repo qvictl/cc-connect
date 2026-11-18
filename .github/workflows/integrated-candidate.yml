@@ -38,7 +38,7 @@ jobs:
           manifest=$(cut -d' ' -f1 .ci/manifest.sha256)
           echo "archive_sha=$digest" >> "$GITHUB_OUTPUT"
           echo "manifest_sha=$manifest" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "bootstrap_commit=$GITHUB_SHA" "manifest_sha256=$manifest" "source_archive_sha256=$digest" "packaging_config_sha256=$(sha256sum .ci/nfpm.yaml | cut -d\' \' -f1)" > SOURCE-PROVENANCE.txt
+          printf '%s\n' "bootstrap_commit=$GITHUB_SHA" "manifest_sha256=$manifest" "source_archive_sha256=$digest" "packaging_config_sha256=$(sha256sum .ci/nfpm.yaml | cut -d' ' -f1)" > SOURCE-PROVENANCE.txt
       - uses: actions/upload-artifact@v4
         with:
           name: candidate-source-${{ github.run_id }}
