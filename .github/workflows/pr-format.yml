@@ -22,7 +22,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for item in 2145:44276589739 2137:44276589615; do
+          for item in 55:44279389273; do
             pr=${item%:*}; run=${item#*:}
             gh run download "$run" --repo qvictl/cc-connect --name "candidate-source-$run" --dir "format/$pr"
           done
@@ -35,14 +35,14 @@ jobs:
           import json,gzip,hashlib,subprocess,pathlib,base64
           base=json.load(open('format/base.json')); assert not base['truncated']
           base={f['path']:f['sha'] for f in base['tree'] if f['type']=='blob'}
-          for pr in [2145,2137]:
+          for pr in [55]:
               p=pathlib.Path(f'format/{pr}');subprocess.run(['tar','-xzf','candidate-source.tar.gz'],cwd=p,check=True)
-              root=p/'candidate';m=json.load(gzip.open(f'.pr-ci/{pr}/reconstruction.json.gz'))
+              root=p/'candidate';m=json.load(gzip.open('.ci/reconstruction.json.gz'))
               for f in m['files']:
                   data=(root/f['path']).read_bytes();assert hashlib.sha256(data).hexdigest()==f['sha256'],f['path']
               subprocess.run(['git','init','-q'],cwd=root,check=True)
               subprocess.run(['git','add','-f','.'],cwd=root,check=True)
-              changed=[f['path'] for f in m['files'] if f['path'].endswith('.go') and base.get(f['path'])!=f['git_blob']]
+              changed=['agent/antigravity/session_test.go','core/engine.go','core/goal.go','core/goal_recovery_event_test.go','core/goal_test.go','core/session_delete_card_parity_test.go','platform/feishu/card_navigation_user_test.go']
               if changed:subprocess.run(['gofmt','-w',*changed],cwd=root,check=True)
               patch=subprocess.check_output(['git','diff','--binary'],cwd=root)
               pathlib.Path(f'patches/pr{pr}.patch').write_bytes(patch)
