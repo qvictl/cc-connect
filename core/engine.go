@@ -366,6 +366,7 @@ type Engine struct {
 	tts                   *TTSCfg
 	display               DisplayCfg
 	injectSender          bool
+	busyActionMu          sync.RWMutex
 	busyAction            string // BusyActionQueue (default) or BusyActionInject
 	attachmentSendEnabled bool
 	startedAt             time.Time
@@ -1065,13 +1066,23 @@ const (
 )
 
 // SetBusyAction sets the project's busy_action. Unknown values fall back to
-// BusyActionQueue; config validation rejects them earlier.
+// BusyActionQueue; config validation rejects them earlier. Config reload can
+// run concurrently with message handling, so the field is guarded.
 func (e *Engine) SetBusyAction(v string) {
+	mode := BusyActionQueue
 	if strings.EqualFold(strings.TrimSpace(v), BusyActionInject) {
-		e.busyAction = BusyActionInject
-		return
+		mode = BusyActionInject
 	}
-	e.busyAction = BusyActionQueue
+	e.busyActionMu.Lock()
+	e.busyAction = mode
+	e.busyActionMu.Unlock()
+}
+
+// busyActionMode returns the current busy_action safely for concurrent reloads.
+func (e *Engine) busyActionMode() string {
+	e.busyActionMu.RLock()
+	defer e.busyActionMu.RUnlock()
+	return e.busyAction
 }
 
 // SetInjectSender controls whether sender identity (platform and user ID) is
@@ -3278,7 +3289,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		// into the running turn when the agent can take mid-turn input, the
 		// same way /ps does, so the user does not wait for the whole turn
 		// before it is seen.
-		if e.busyAction == BusyActionInject && e.injectMessageIntoBusyTurn(p, msg, interactiveKey, session, sessions) {
+		if e.busyActionMode() == BusyActionInject && e.injectMessageIntoBusyTurn(p, msg, interactiveKey, session, sessions) {
 			return
 		}
 		// Otherwise try to queue the message for the running turn
@@ -3446,6 +3457,11 @@ func (e *Engine) injectMessageIntoBusyTurn(p Platform, msg *Message, interactive
 	// A voice message keeps the queue, as in upstream #523: its turn is the
 	// one that answers by voice (state.fromVoice), which an injection is not.
 	if agentSession == nil || !agentSession.Alive() || queued > 0 || stale || msg.FromVoice {
+		return false
+	}
+	if acceptor, ok := agentSession.(MidTurnInputAcceptor); ok && !acceptor.AcceptsMidTurnInput() {
+		// The session lock can still be held after the final result while
+		// post-turn cleanup runs. Writing then would start an unowned turn.
 		return false
 	}
 

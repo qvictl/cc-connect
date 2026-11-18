@@ -28,6 +28,9 @@ func newMidTurnTestSession(t *testing.T, window time.Duration) *claudeSession {
 	}
 	cs.sessionID.Store("test-session")
 	cs.alive.Store(true)
+	// These tests start from the middle of a live turn; gating has its own
+	// idle-session tests.
+	cs.turnActive.Store(true)
 	return cs
 }
 

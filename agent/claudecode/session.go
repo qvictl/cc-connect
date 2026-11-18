@@ -50,6 +50,11 @@ type claudeSession struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	alive           atomic.Bool
+	// turnActive is true from a successful user-message write until the
+	// final merged turn result is emitted. The engine uses AcceptsMidTurnInput
+	// to avoid injecting in the narrow window after a turn ended but before
+	// the session lock is released.
+	turnActive atomic.Bool
 
 	// activeModel stores the model id reported by the CLI's init event (e.g.
 	// "claude-opus-4-7[1m]"). It may be empty if the init event hasn't
@@ -599,6 +604,7 @@ func (cs *claudeSession) finishReadLoop(waitErrCh <-chan error, stderrBuf *bytes
 	err := <-waitErrCh
 	cs.releaseHeldResult()
 
+	cs.turnActive.Store(false)
 	cs.alive.Store(false)
 	if err != nil {
 		stderrMsg := ""
@@ -1444,10 +1450,14 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 	}
 
 	if len(images) == 0 && len(files) == 0 {
-		return cs.writeJSON(map[string]any{
+		if err := cs.writeJSON(map[string]any{
 			"type":    "user",
 			"message": map[string]any{"role": "user", "content": prompt},
-		})
+		}); err != nil {
+			return err
+		}
+		cs.turnActive.Store(true)
+		return nil
 	}
 
 	attachDir := filepath.Join(cs.workDir, ".cc-connect", "attachments")
@@ -1502,10 +1512,14 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 	}
 	parts = append(parts, map[string]any{"type": "text", "text": textPart})
 
-	return cs.writeJSON(map[string]any{
+	if err := cs.writeJSON(map[string]any{
 		"type":    "user",
 		"message": map[string]any{"role": "user", "content": parts},
-	})
+	}); err != nil {
+		return err
+	}
+	cs.turnActive.Store(true)
+	return nil
 }
 
 // RespondPermission writes a control_response to the Claude process stdin.
@@ -1683,6 +1697,12 @@ var followUpTurnWindow = 2 * time.Second
 // result instead; that turn is merged into the running one (see
 // deliverResult), so the engine still sees exactly one EventResult.
 func (cs *claudeSession) SendMidTurn(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	// Refuse when the turn already ended: the engine's session lock can still
+	// be held during post-turn cleanup, and writing a user message then would
+	// start an unowned turn that shifts the next reply.
+	if !cs.turnActive.Load() {
+		return fmt.Errorf("claudecode: no active turn")
+	}
 	// Count the message before writing it: the read loop can receive the
 	// current turn's result while Send is still writing to stdin. If the
 	// counter is bumped after Send returns, deliverResult sees zero and emits
@@ -1702,7 +1722,14 @@ func (cs *claudeSession) SendMidTurn(prompt string, messageID string, images []c
 	return nil
 }
 
+// AcceptsMidTurnInput reports whether a user message can still be folded
+// into the live turn. It is false after the final result is emitted.
+func (cs *claudeSession) AcceptsMidTurnInput() bool {
+	return cs.turnActive.Load()
+}
+
 var _ core.MidTurnInputSender = (*claudeSession)(nil)
+var _ core.MidTurnInputAcceptor = (*claudeSession)(nil)
 
 // deliverResult emits a turn-ending result, first prepending any earlier turn
 // merged into it. While mid-turn messages are outstanding it holds the result
@@ -1768,6 +1795,11 @@ func (cs *claudeSession) releaseHeldResult() {
 }
 
 func (cs *claudeSession) emit(evt core.Event) {
+	// The final merged result is the end of the turn. Clear the gate before
+	// publishing it so the engine cannot inject during post-turn cleanup.
+	if evt.Type == core.EventResult && evt.Done {
+		cs.turnActive.Store(false)
+	}
 	select {
 	case cs.events <- evt:
 	case <-cs.ctx.Done():
@@ -1804,6 +1836,14 @@ func mergeTurnResults(first, second core.Event) core.Event {
 	merged.OutputTokens += first.OutputTokens
 	merged.CacheCreationInputTokens += first.CacheCreationInputTokens
 	merged.CacheReadInputTokens += first.CacheReadInputTokens
+	if merged.Error == nil {
+		// The second turn may have succeeded after the first errored; do not
+		// silently discard the first error from the merged turn record.
+		merged.Error = first.Error
+	}
+	if merged.ModelSwitch == nil {
+		merged.ModelSwitch = first.ModelSwitch
+	}
 	return merged
 }
 

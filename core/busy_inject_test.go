@@ -276,6 +276,32 @@ func TestBusyMessage_FallsBackToQueue(t *testing.T) {
 	}
 }
 
+// gatedMidTurnSession advertises the optional acceptor; active controls
+// whether the adapter still has a live turn.
+type gatedMidTurnSession struct {
+	*midTurnAgentSession
+	active bool
+}
+
+func (s *gatedMidTurnSession) AcceptsMidTurnInput() bool { return s.active }
+
+func TestBusyMessage_AcceptorFalse_Queues(t *testing.T) {
+	sess := &gatedMidTurnSession{midTurnAgentSession: newMidTurnSession("gated"), active: false}
+	e, p, state, _ := setupBusySession(t, sess)
+
+	e.ReceiveMessage(p, busyMessage("after the turn ended"))
+
+	if sess.midTurns != 0 {
+		t.Fatalf("SendMidTurn calls = %d, want 0 when the adapter has no live turn", sess.midTurns)
+	}
+	if n := pendingCount(state); n != 1 {
+		t.Fatalf("pending messages = %d, want 1", n)
+	}
+	if !sentContains(p.getSent(), e.i18n.T(MsgMessageQueued)) {
+		t.Fatalf("sent = %v, want MsgMessageQueued", p.getSent())
+	}
+}
+
 func TestBusyMessage_AgentStillStarting_Queues(t *testing.T) {
 	// The first message's agent process is still starting (placeholder state
 	// with no agentSession yet): there is nothing to inject into, so the

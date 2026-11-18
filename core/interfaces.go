@@ -414,6 +414,15 @@ type MidTurnInputSender interface {
 	SendMidTurn(prompt string, messageID string, images []ImageAttachment, files []FileAttachment) error
 }
 
+// MidTurnInputAcceptor is an optional interface for agents whose
+// MidTurnInputSender can report whether a turn is still live. The engine
+// checks it before writing: the session busy lock can outlive the final
+// result by the duration of post-turn cleanup, and injecting in that window
+// would start an unowned turn.
+type MidTurnInputAcceptor interface {
+	AcceptsMidTurnInput() bool
+}
+
 // ToolAuthorizer is an optional interface for agents that support dynamic tool authorization.
 type ToolAuthorizer interface {
 	AddAllowedTools(tools ...string) error

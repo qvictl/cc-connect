@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -103,6 +104,43 @@ func TestClaudeSession_SecondHeldResultMerges(t *testing.T) {
 	got := doneResults(drain(cs, 300*time.Millisecond))
 	if len(got) != 1 || got[0].Content != "STORY\n\nBANANA." {
 		t.Fatalf("results = %#v, want one merged STORY + BANANA result", got)
+	}
+}
+
+func TestClaudeSession_AcceptsMidTurnInputTracksTurn(t *testing.T) {
+	cs := newMidTurnTestSession(t, time.Hour)
+	cs.turnActive.Store(false) // simulate a session before its first turn
+	if cs.AcceptsMidTurnInput() {
+		t.Fatal("new session must not accept mid-turn input before a turn starts")
+	}
+	if err := cs.Send("start the task", "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !cs.AcceptsMidTurnInput() {
+		t.Fatal("session must accept mid-turn input after Send")
+	}
+	cs.handleReadLoopLine(resultA)
+	if cs.AcceptsMidTurnInput() {
+		t.Fatal("session must stop accepting mid-turn input after the final result")
+	}
+}
+
+func TestClaudeSession_SendMidTurnRejectsIdle(t *testing.T) {
+	cs := newMidTurnTestSession(t, time.Hour)
+	cs.turnActive.Store(false)
+	if err := cs.SendMidTurn("too late", "", nil, nil); err == nil {
+		t.Fatal("SendMidTurn on an idle session must fail instead of starting an unowned turn")
+	}
+}
+
+func TestMergeTurnResults_PreservesFirstError(t *testing.T) {
+	wantErr := errors.New("first turn failed")
+	got := mergeTurnResults(
+		core.Event{Content: "ALPHA", Error: wantErr},
+		core.Event{Content: "BANANA"},
+	)
+	if !errors.Is(got.Error, wantErr) {
+		t.Fatalf("merged.Error = %v, want the first turn's error", got.Error)
 	}
 }
 
