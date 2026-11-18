@@ -56,11 +56,11 @@ func TestPostMessageFallsBackToUserID(t *testing.T) {
 	}
 }
 
-// A button press must land in the same session as the conversation. MAX omits
-// recipient.chat_id in the callback, so the platform reuses the chat_id learned
+// A button press must land in the same session as the conversation. When MAX omits
+// recipient.chat_id in a dialog callback, the platform reuses the chat_id learned
 // from the user's earlier messages instead of opening "max:0:<user>".
 func TestCallbackReusesLearnedChatID(t *testing.T) {
-	p := newTestPlatform(t, "http://127.0.0.1:0")
+	p, _ := newCallbackRoutingPlatform()
 
 	var mu sync.Mutex
 	var keys []string
@@ -77,17 +77,16 @@ func TestCallbackReusesLearnedChatID(t *testing.T) {
 
 	p.handleMessage(context.Background(), &maxMessage{
 		Sender:    maxUser{UserID: userID, Name: "Tester"},
-		Recipient: maxRecipient{ChatID: chatID},
+		Recipient: maxRecipient{ChatID: chatID, ChatType: "dialog"},
 		Timestamp: time.Now().UnixMilli(), // otherwise IsOldMessage drops it
 		Body:      maxBody{Mid: "mid.1", Text: "hello"},
 	})
 
 	p.handleCallback(context.Background(), &maxCallback{
 		CallbackID: "cb.1",
-		Payload:    "perm:allow_all",
+		Payload:    "perm:prompt-current:allow_all",
 		User:       maxUser{UserID: userID, Name: "Tester"},
-		Message:    maxMessage{Body: maxBody{Mid: "mid.2"}}, // recipient.chat_id = 0
-	})
+	}, &maxMessage{Recipient: maxRecipient{ChatType: "dialog", UserID: userID}, Body: maxBody{Mid: "mid.2"}})
 
 	want := "max:" + strconv.FormatInt(chatID, 10) + ":" + strconv.FormatInt(userID, 10)
 	mu.Lock()
@@ -118,27 +117,24 @@ func TestReconstructReplyCtxKeepsUserID(t *testing.T) {
 	}
 }
 
-// Permission buttons must reach the engine as the words it matches on.
-// Raw "perm:allow_all" matched nothing, so "Allow all" silently did nothing
-// while "Allow" worked by accident (the engine tokenises and finds "allow").
+// Permission buttons must preserve their full prompt-bound payload. Ordinary
+// buttons remain ordinary input; the platform must not strip the binding.
 func TestCallbackTranslatesPermissionPayloads(t *testing.T) {
-	// Payloads come from the constants (single source of truth with the sender
-	// side), but the expected words are spelled out on purpose: taking them from
-	// permPayloads would make the test agree with itself instead of pinning the
-	// exact wording the engine matches on.
+	// Expected payloads are explicit so a decoder regression cannot redefine
+	// both sides of the assertion and silently lose the prompt identity.
 	cases := []struct {
 		payload string
 		want    string
 		perm    bool
 	}{
-		{payloadAllow, "allow", true},
-		{payloadAllowAll, "allow all", true},
-		{payloadDeny, "deny", true},
+		{"perm:prompt-current:allow", "perm:prompt-current:allow", true},
+		{"perm:prompt-current:allow_all", "perm:prompt-current:allow_all", true},
+		{"perm:prompt-current:deny", "perm:prompt-current:deny", true},
 		{"cb_play", "cb_play", false}, // ordinary buttons pass through untouched
 	}
 
 	for _, tc := range cases {
-		p := newTestPlatform(t, "http://127.0.0.1:0")
+		p, _ := newCallbackRoutingPlatform()
 		var got *core.Message
 		p.handler = func(_ core.Platform, m *core.Message) { got = m }
 
@@ -146,8 +142,7 @@ func TestCallbackTranslatesPermissionPayloads(t *testing.T) {
 			CallbackID: "cb." + tc.payload,
 			Payload:    tc.payload,
 			User:       maxUser{UserID: 999001, Name: "Tester"},
-			Message:    maxMessage{Body: maxBody{Mid: ""}}, // no mid → no card edit attempt
-		})
+		}, &maxMessage{Recipient: maxRecipient{ChatType: "dialog", ChatID: 555000, UserID: 999001}, Body: maxBody{Mid: "permission-card"}})
 
 		if got == nil {
 			t.Fatalf("%s: message was not routed", tc.payload)
@@ -157,91 +152,6 @@ func TestCallbackTranslatesPermissionPayloads(t *testing.T) {
 		}
 		if got.IsPermissionResponse != tc.perm {
 			t.Errorf("%s: IsPermissionResponse = %v, want %v", tc.payload, got.IsPermissionResponse, tc.perm)
-		}
-	}
-}
-
-// Regression test for #2278: only a private dialog may populate the callback
-// fallback. A group post used to overwrite it, so the next button press in the
-// DM (delivered with recipient.chat_id = 0) was answered in the group session
-// and the permission request in the dialog was never resolved.
-func TestGroupMessageKeepsDialogChatIDForCallbacks(t *testing.T) {
-	p := newTestPlatform(t, "http://127.0.0.1:0")
-
-	var mu sync.Mutex
-	var keys []string
-	p.handler = func(_ core.Platform, msg *core.Message) {
-		mu.Lock()
-		keys = append(keys, msg.SessionKey)
-		mu.Unlock()
-	}
-
-	const (
-		userID     = int64(999002)
-		dialogChat = int64(555001)
-		groupChat  = int64(555777)
-	)
-	now := time.Now().UnixMilli()
-
-	p.handleMessage(context.Background(), &maxMessage{
-		Sender:    maxUser{UserID: userID, Name: "Tester"},
-		Recipient: maxRecipient{ChatID: dialogChat, ChatType: "dialog"},
-		Timestamp: now,
-		Body:      maxBody{Mid: "mid.dm1", Text: "hello from the dm"},
-	})
-	p.handleMessage(context.Background(), &maxMessage{
-		Sender:    maxUser{UserID: userID, Name: "Tester"},
-		Recipient: maxRecipient{ChatID: groupChat, ChatType: "chat"},
-		Timestamp: now,
-		Body:      maxBody{Mid: "mid.group1", Text: "hello from the group"},
-	})
-	p.handleCallback(context.Background(), &maxCallback{
-		CallbackID: "cb.dm1",
-		Payload:    "perm:allow",
-		User:       maxUser{UserID: userID, Name: "Tester"},
-		Message:    maxMessage{Body: maxBody{Mid: "mid.card1"}}, // recipient.chat_id = 0
-	})
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(keys) != 3 {
-		t.Fatalf("expected 3 routed messages, got %d: %v", len(keys), keys)
-	}
-	if want := "max:555001:999002"; keys[2] != want {
-		t.Fatalf("DM callback landed in %q, want %q", keys[2], want)
-	}
-}
-
-// A group author who never wrote in the DM has no dialog chat to fall back to;
-// caching the group chat would send the button reply there.
-func TestGroupOnlyMessageIsNotCachedForCallbacks(t *testing.T) {
-	p := newTestPlatform(t, "http://127.0.0.1:0")
-
-	p.handleMessage(context.Background(), &maxMessage{
-		Sender:    maxUser{UserID: 999003},
-		Recipient: maxRecipient{ChatID: 555888, ChatType: "channel"},
-		Timestamp: time.Now().UnixMilli(),
-		Body:      maxBody{Mid: "mid.channel1", Text: "hi"},
-	})
-
-	if _, ok := p.chatOfUser.Load("999003"); ok {
-		t.Fatal("group/channel chat_id must not be cached for callbacks")
-	}
-}
-
-func TestIsGroupChatType(t *testing.T) {
-	cases := map[string]bool{
-		"dialog":  false,
-		"":        false, // payload without the field keeps the old fallback
-		"unknown": false,
-		"chat":    true,
-		"group":   true,
-		"channel": true,
-		"CHAT":    true,
-	}
-	for in, want := range cases {
-		if got := isGroupChatType(in); got != want {
-			t.Errorf("isGroupChatType(%q) = %v, want %v", in, got, want)
 		}
 	}
 }

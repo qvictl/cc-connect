@@ -146,6 +146,82 @@ func TestCUJ_A9_PsAndBtwSupplementRunningTask(t *testing.T) {
 	}
 }
 
+type commentaryPsSession struct {
+	stubAgentSession
+	events  chan Event
+	started chan struct{}
+}
+
+func (s *commentaryPsSession) Events() <-chan Event { return s.events }
+func (s *commentaryPsSession) Send(prompt, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+	if prompt == "run tests" {
+		close(s.started)
+	} else {
+		s.events <- Event{Type: EventCommentary, Content: "Progress: tests are still running"}
+	}
+	return nil
+}
+
+func TestCUJ_A9_PsProgressArrivesBeforeTaskCompletion(t *testing.T) {
+	p := &stubCompactProgressPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "test"}, style: "card", supportPayload: true,
+	}
+	s := &commentaryPsSession{events: make(chan Event, 8), started: make(chan struct{})}
+	e := NewEngine("test", &resultAgent{session: s}, []Platform{p}, "", LangEnglish)
+	enabled := true
+	e.SetDisplayConfig(DisplayCfg{Mode: "quiet", CardMode: "rich", CommentaryMessages: &enabled})
+	t.Cleanup(func() {
+		if err := e.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	const key = "test:ps-progress"
+	send := func(text string) {
+		e.ReceiveMessage(p, &Message{SessionKey: key, Platform: p.Name(), UserID: "user", Content: text, ReplyCtx: "ctx"})
+	}
+	waitFor := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for !strings.Contains(strings.Join(p.getSent(), "\n"), want) {
+			if time.Now().After(deadline) {
+				t.Fatalf("waiting for %q; visible messages: %v", want, p.getSent())
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	// Action 1: start a task whose completion is deliberately held.
+	send("run tests")
+	select {
+	case <-s.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("task did not start")
+	}
+	// Action 2: ask for progress while the task is still running.
+	send("/ps report progress")
+	waitFor("Progress: tests are still running")
+	if !e.sessions.GetOrCreateActive(key).Busy() {
+		t.Fatal("progress reply ended the task")
+	}
+	// Action 3: check status without starting another model turn.
+	send("/status")
+	if strings.Count(strings.Join(p.getSent(), "\n"), "Progress: tests are still running") != 1 {
+		t.Fatalf("progress must be one new message, got %v", p.getSent())
+	}
+	s.events <- Event{Type: EventResult, Content: "All tests passed", Done: true}
+	deadline := time.Now().Add(2 * time.Second)
+	for e.sessions.GetOrCreateActive(key).Busy() {
+		if time.Now().After(deadline) {
+			t.Fatal("final answer did not finish the task")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	history := e.sessions.GetOrCreateActive(key).GetHistory(1)
+	if len(history) != 1 || history[0].Content != "All tests passed" {
+		t.Fatalf("final answer contains commentary: %+v", history)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helper types: cujAgent + cujAgentSession give per-CUJ control over what the
 // agent "replies" for each user prompt, without bringing up a real LLM.
@@ -234,6 +310,7 @@ type cujAgentSession struct {
 	// observed
 	sentPrompts []string
 	sentImages  [][]ImageAttachment
+	sentFiles   [][]FileAttachment
 	closeCount  int
 }
 
@@ -254,10 +331,11 @@ func newCUJAgentSession() *cujAgentSession {
 	}
 }
 
-func (s *cujAgentSession) Send(prompt string, _ string, images []ImageAttachment, _ []FileAttachment) error {
+func (s *cujAgentSession) Send(prompt string, _ string, images []ImageAttachment, files []FileAttachment) error {
 	s.mu.Lock()
 	s.sentPrompts = append(s.sentPrompts, prompt)
 	s.sentImages = append(s.sentImages, cloneCUJImages(images))
+	s.sentFiles = append(s.sentFiles, cloneCUJFiles(files))
 	reply := s.reply
 	delay := s.delayMs
 	override := s.nextEventOverride
@@ -340,6 +418,25 @@ func (s *cujAgentSession) getSentImages() [][]ImageAttachment {
 	return out
 }
 
+func cloneCUJFiles(files []FileAttachment) []FileAttachment {
+	out := make([]FileAttachment, len(files))
+	for i, file := range files {
+		out[i] = file
+		out[i].Data = append([]byte(nil), file.Data...)
+	}
+	return out
+}
+
+func (s *cujAgentSession) getSentFiles() [][]FileAttachment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]FileAttachment, len(s.sentFiles))
+	for i, files := range s.sentFiles {
+		out[i] = cloneCUJFiles(files)
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // cujEnv bundles the engine + platform stub + agent for a single CUJ run.
 // ---------------------------------------------------------------------------
@@ -387,6 +484,65 @@ func (env *cujEnv) userSends(userID, content string) string {
 }
 
 func plat(p *stubPlatformEngine) Platform { return p }
+
+type cujRetryPermissionAgent struct {
+	stubAgent
+	session *cujRetryPermissionSession
+}
+
+func (a *cujRetryPermissionAgent) StartSession(context.Context, string) (AgentSession, error) {
+	return a.session, nil
+}
+
+type cujRetryPermissionSession struct {
+	*cujAgentSession
+	attempts int
+	question bool
+}
+
+func (s *cujRetryPermissionSession) Send(string, string, []ImageAttachment, []FileAttachment) error {
+	event := Event{Type: EventPermissionRequest, RequestID: "retry", ToolName: "Bash", ToolInput: "run task"}
+	if s.question {
+		event.ToolName = "AskUserQuestion"
+		event.Questions = []UserQuestion{{Question: "Choose value", Options: []UserQuestionOption{{Label: "A"}}}}
+	}
+	s.events <- event
+	return nil
+}
+
+func (s *cujRetryPermissionSession) RespondPermission(string, PermissionResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts++
+	if s.attempts == 1 {
+		return errors.New("temporary submission failure")
+	}
+	s.events <- Event{Type: EventResult, Content: "task completed after retry", Done: true}
+	return nil
+}
+
+// Three user actions: submit work, answer once (transport fails), answer again.
+// The platform must show the failure and then the final answer after retry.
+func TestCUJ_C7_PermissionSubmissionFailureCanRetry(t *testing.T) {
+	for _, question := range []bool{false, true} {
+		t.Run(fmt.Sprint(question), func(t *testing.T) {
+			env := newCUJEnv(t)
+			s := &cujRetryPermissionSession{cujAgentSession: newCUJAgentSession(), question: question}
+			env.engine.agent = &cujRetryPermissionAgent{session: s}
+			t.Cleanup(func() { _ = env.engine.Stop() })
+			env.userSends("user", "run task")
+			prompt, answer := "Bash", "allow"
+			if question {
+				prompt, answer = "Choose value", "A"
+			}
+			env.waitFor("interaction prompt", 3*time.Second, func() bool { return env.sentContains(prompt) })
+			env.userSends("user", answer)
+			env.waitFor("submission error", 3*time.Second, func() bool { return env.sentContains("temporary submission failure") })
+			env.userSends("user", answer)
+			env.waitFor("reply after retry", 3*time.Second, func() bool { return env.sentContains("task completed after retry") })
+		})
+	}
+}
 
 // cujReplyCtxPlatform wraps stubPlatformEngine and additionally implements
 // ReplyContextReconstructor so it can be used in tests that exercise
@@ -1338,35 +1494,78 @@ func TestCUJ_A4_VoiceMessageWithoutSTTSurfacesClearMessage(t *testing.T) {
 	}
 }
 
-// CUJ-A5 · User uploads file → engine routes it to the agent.
+// CUJ-A5 · Text with a file, a file alone, and a text-only follow-up each
+// complete before teardown. Only the current turn's files reach the agent.
 func TestCUJ_A5_FileReachesAgent(t *testing.T) {
-	plat := &stubPlatformEngine{n: "test"}
-	agent := &cujAgent{}
-	dir := t.TempDir()
-	e := NewEngine("test", agent, []Platform{plat}, dir+"/sessions.json", LangEnglish)
-
-	msg := &Message{
-		SessionKey: "test:file", Platform: "test", MessageID: "f1",
-		UserID: "file", UserName: "file",
-		Content:  "read this file",
-		Files:    []FileAttachment{{MimeType: "text/plain", Data: []byte("hello world"), FileName: "note.txt"}},
-		ReplyCtx: "ctx",
-	}
-	e.ReceiveMessage(plat, msg)
-
-	deadline := time.After(2 * time.Second)
-	for {
-		agent.mu.Lock()
-		n := len(agent.sessions)
-		agent.mu.Unlock()
-		if n > 0 {
-			return
+	env := newCUJEnv(t)
+	t.Cleanup(func() {
+		if err := env.engine.Stop(); err != nil {
+			t.Errorf("stop file journey engine: %v", err)
 		}
-		select {
-		case <-deadline:
-			t.Fatal("agent never received the message with file attachment")
-		default:
-			time.Sleep(10 * time.Millisecond)
+	})
+	turns := []struct {
+		content string
+		files   []FileAttachment
+	}{
+		{
+			content: "read this file",
+			files:   []FileAttachment{{MimeType: "text/plain", Data: []byte("hello world"), FileName: "note.txt"}},
+		},
+		{
+			files: []FileAttachment{{MimeType: "text/plain", Data: []byte("second file"), FileName: "other.txt"}},
+		},
+		{content: "thanks, no new file this time"},
+	}
+	for i, turn := range turns {
+		// The first session uses its default reply. Later turns have distinct
+		// markers so an earlier reply cannot satisfy the next turn's wait.
+		marker := "ok"
+		if i > 0 {
+			marker = fmt.Sprintf("file-turn-%d-done", i+1)
+			env.agent.mu.Lock()
+			sess := env.agent.sessions[0]
+			env.agent.mu.Unlock()
+			sess.mu.Lock()
+			sess.reply = marker
+			sess.mu.Unlock()
+		}
+		env.engine.ReceiveMessage(env.plat, &Message{
+			SessionKey: "test:file", Platform: "test", MessageID: fmt.Sprintf("file%d", i+1),
+			UserID: "file", UserName: "file", Content: turn.content,
+			Files: turn.files, ReplyCtx: "ctx",
+		})
+		// A final reply does not mean the full turn and idle handoff have finished.
+		// Also wait for the turn to release its lock before proceeding.
+		env.waitFor(fmt.Sprintf("file journey turn %d to finish", i+1), 2*time.Second, func() bool {
+			matched := false
+			for _, reply := range env.plat.getSent() {
+				if reply == marker {
+					matched = true
+				}
+			}
+			return matched && !env.engine.sessions.GetOrCreateActive("test:file").Busy()
+		})
+
+		env.agent.mu.Lock()
+		if len(env.agent.sessions) != 1 {
+			n := len(env.agent.sessions)
+			env.agent.mu.Unlock()
+			t.Fatalf("turn %d: agent sessions = %d, want one continued session", i+1, n)
+		}
+		sess := env.agent.sessions[0]
+		env.agent.mu.Unlock()
+		sent := sess.getSentFiles()
+		if len(sent) != i+1 {
+			t.Fatalf("turn %d: agent received %d sends, want %d", i+1, len(sent), i+1)
+		}
+		got := sent[i]
+		if len(got) != len(turn.files) {
+			t.Fatalf("turn %d: agent received %d files, want %d", i+1, len(got), len(turn.files))
+		}
+		for j, want := range turn.files {
+			if got[j].MimeType != want.MimeType || got[j].FileName != want.FileName || !bytes.Equal(got[j].Data, want.Data) {
+				t.Fatalf("turn %d file %d: got %#v, want %#v", i+1, j+1, got[j], want)
+			}
 		}
 	}
 }
@@ -1475,31 +1674,106 @@ func TestCUJ_B5_CurrentShowsActiveInfo(t *testing.T) {
 
 // CUJ-B7 · /delete <name> removes the session AND it disappears from /list.
 func TestCUJ_B7_DeleteRemovesFromList(t *testing.T) {
-	env := newCUJEnv(t)
-	key := "test:b7"
-	env.userSends("b7", "first")
-	env.waitFor("turn1", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
+	t.Run("LocalSessionCount", func(t *testing.T) {
+		env := newCUJEnv(t)
+		key := "test:b7"
+		env.userSends("b7", "first")
+		env.waitFor("turn1", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
 
-	s1 := env.activeSession(key)
-	agentID := s1.GetAgentSessionID()
-	if agentID == "" {
-		t.Skip("agent session ID not set yet; cmdDelete needs a target ID")
-	}
-	env.engine.sessions.SetSessionName(agentID, "to-be-deleted")
+		s1 := env.activeSession(key)
+		agentID := s1.GetAgentSessionID()
+		if agentID == "" {
+			t.Skip("agent session ID not set yet; cmdDelete needs a target ID")
+		}
+		env.engine.sessions.SetSessionName(agentID, "to-be-deleted")
 
-	beforeCount := len(env.engine.sessions.ListSessions(key))
+		beforeCount := len(env.engine.sessions.ListSessions(key))
 
-	env.plat.clearSent()
-	env.userSends("b7", "/delete to-be-deleted")
-	env.waitFor("delete reply", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
+		env.plat.clearSent()
+		env.userSends("b7", "/delete to-be-deleted")
+		env.waitFor("delete reply", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
 
-	afterCount := len(env.engine.sessions.ListSessions(key))
-	// /delete is platform-dependent; some implementations target agent
-	// sessions, others target SessionManager sessions. We assert at minimum
-	// that the user got user-visible feedback and the count did not GROW.
-	if afterCount > beforeCount {
-		t.Fatalf("after /delete, session count went UP: was %d, now %d", beforeCount, afterCount)
-	}
+		afterCount := len(env.engine.sessions.ListSessions(key))
+		// /delete is platform-dependent; some implementations target agent
+		// sessions, others target SessionManager sessions. We assert at minimum
+		// that the user got user-visible feedback and the count did not GROW.
+		if afterCount > beforeCount {
+			t.Fatalf("after /delete, session count went UP: was %d, now %d", beforeCount, afterCount)
+		}
+	})
+
+	t.Run("ConcurrentSwitchCannotResumeDeletedSession", func(t *testing.T) {
+		p := &stubPlatformEngine{n: "test"}
+		d := &blockingSessionDeleter{entered: make(chan struct{}), release: make(chan struct{})}
+		agent := &blockingDeleteListAgent{
+			stubListAgent:         stubListAgent{sessions: []AgentSessionInfo{{ID: "target", Summary: "Target"}}},
+			blockingSessionDeleter: d,
+		}
+		e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(d.release) }) }
+		t.Cleanup(release)
+		send := func(user, command string) {
+			e.ReceiveMessage(p, &Message{
+				SessionKey: "test:" + user, Platform: p.Name(), UserID: user,
+				Content: command, ReplyCtx: user,
+			})
+		}
+		waitForReply := func(want string) {
+			t.Helper()
+			deadline := time.After(2 * time.Second)
+			ticker := time.NewTicker(5 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				for _, reply := range p.getSent() {
+					if strings.Contains(reply, want) {
+						return
+					}
+				}
+				select {
+				case <-ticker.C:
+				case <-deadline:
+					t.Fatalf("waiting for %q; visible replies: %v", want, p.getSent())
+				}
+			}
+		}
+
+		// User actions 1 and 2: select the target, then leave it for /new.
+		send("other", "/switch target")
+		waitForReply(e.i18n.Tf(MsgSwitchSuccess, "Target", "target", 0))
+		p.clearSent()
+		send("other", "/new")
+		waitForReply(e.i18n.T(MsgNewSessionCreated))
+		p.clearSent()
+
+		// User action 3: another chat deletes it, blocked after the active check.
+		go send("caller", "/delete target")
+		select {
+		case <-d.entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("delete did not reach the agent")
+		}
+
+		// User action 4: switch from a list obtained before deletion finished.
+		switchDone := make(chan struct{})
+		go func() {
+			send("other", "/switch target")
+			close(switchDone)
+		}()
+		select {
+		case <-switchDone:
+			t.Fatal("switch completed while deletion was in progress")
+		case <-time.After(50 * time.Millisecond):
+		}
+		release()
+		waitForReply(e.i18n.Tf(MsgDeleteSuccess, "Target"))
+		waitForReply(e.i18n.Tf(MsgSwitchNoMatch, "target"))
+		for _, reply := range p.getSent() {
+			if strings.Contains(reply, e.i18n.Tf(MsgSwitchSuccess, "Target", "target", 0)) {
+				t.Fatalf("user was told a deleted session was selected: %q", reply)
+			}
+		}
+	})
 }
 
 // CUJ-B8 · /history outputs the conversation history to the user.
@@ -1641,6 +1915,59 @@ func TestCUJ_D2_DisabledCommandRefused(t *testing.T) {
 	// We don't pin specific text; we assert the engine did not crash and
 	// gave a reply (rejection feedback). A regression that silently
 	// drops the command would leave plat empty.
+
+	// Shared-session cards must apply the clicker's role, not the session owner.
+	t.Run("shared session card clicker", func(t *testing.T) {
+		p := &userAwareCardJourneyPlatform{stubCardPlatform: stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}}
+		agent := &stubProviderAgent{providers: []ProviderConfig{{Name: "a"}, {Name: "b"}}, active: "a"}
+		e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+		roles := NewUserRoleManager()
+		roles.Configure("", []RoleInput{
+			{Name: "admin", UserIDs: []string{"admin"}},
+			{Name: "member", UserIDs: []string{"member"}, DisabledCommands: []string{"provider"}},
+		})
+		e.SetUserRoles(roles)
+		e.onPlatformReady(p)
+		const key = "test:shared-chat"
+		// Action 1: a member opens help through the real message entrypoint.
+		e.ReceiveMessage(p, &Message{SessionKey: key, UserID: "member", Content: "/help", ReplyCtx: "ctx"})
+		if len(p.repliedCards) != 1 || p.navigation == nil {
+			t.Fatal("expected help card and registered navigation handler")
+		}
+		// Action 2: the member navigates to the agent tab and cannot see provider.
+		card := p.navigation("nav:/help agent", key, "member")
+		if _, ok := findCardAction(card, "nav:/provider"); ok {
+			t.Fatal("member can see the disabled provider action")
+		}
+		// Action 3: an admin in the same session can still open provider controls.
+		card = p.navigation("nav:/provider", key, "admin")
+		if card == nil || !strings.Contains(card.RenderText(), fmt.Sprintf(e.i18n.T(MsgProviderCurrent), "a")) {
+			t.Fatalf("admin provider card = %v, want current provider a", card)
+		}
+		// Action 4: clicking that admin-opened card as a member must be refused.
+		card = p.navigation("act:/provider b", key, "member")
+		if card == nil || !strings.Contains(card.RenderText(), "Command `/provider` is disabled") {
+			t.Fatalf("member switch card = %v, want disabled notice", card)
+		}
+		// Action 5: reopening provider as admin still shows the unchanged provider.
+		card = p.navigation("nav:/provider", key, "admin")
+		if card == nil || !strings.Contains(card.RenderText(), fmt.Sprintf(e.i18n.T(MsgProviderCurrent), "a")) {
+			t.Fatalf("provider changed after member click: %v", card)
+		}
+		// Action 6: the member opens another card with their own session key.
+		const memberKey = "test:shared-chat:member"
+		e.ReceiveMessage(p, &Message{SessionKey: memberKey, UserID: "member", Content: "/help", ReplyCtx: "ctx"})
+		// Action 7: an admin clicks that member-created card and gets admin controls.
+		card = p.navigation("nav:/help agent", memberKey, "admin")
+		if _, ok := findCardAction(card, "nav:/provider"); !ok {
+			t.Fatal("admin inherited member's disabled commands from the card")
+		}
+		// Action 8: the admin switches successfully while keeping that session key.
+		card = p.navigation("act:/provider b", memberKey, "admin")
+		if card == nil || !strings.Contains(card.RenderText(), fmt.Sprintf(e.i18n.T(MsgProviderCurrent), "b")) {
+			t.Fatalf("admin could not switch through member-created card: %v", card)
+		}
+	})
 }
 
 // CUJ-D3 · admin_from grants privileged-command access — admin gating is
@@ -2238,6 +2565,11 @@ func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
 	pB := &stubPlatformEngine{n: "platB"}
 	agent := &cujAgent{}
 	e := NewEngine("test", agent, []Platform{pA, pB}, dir+"/sessions.json", LangEnglish)
+	t.Cleanup(func() {
+		if err := e.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
 
 	// Fire 5 messages on each platform concurrently.
 	var wg sync.WaitGroup
@@ -2270,8 +2602,10 @@ func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
 	// constrained CI hosts; the in-isolation run finishes < 2s.
 	deadline := time.After(30 * time.Second)
 	for {
-		histA := e.sessions.GetOrCreateActive("platA:userA").GetHistory(0)
-		histB := e.sessions.GetOrCreateActive("platB:userB").GetHistory(0)
+		sessionA := e.sessions.GetOrCreateActive("platA:userA")
+		sessionB := e.sessions.GetOrCreateActive("platB:userB")
+		histA := sessionA.GetHistory(0)
+		histB := sessionB.GetHistory(0)
 		// Each user sent 5 messages — expect each session to have ≥5 user
 		// entries when fully drained.
 		userA := 0
@@ -2286,12 +2620,25 @@ func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
 				userB++
 			}
 		}
-		if userA >= 5 && userB >= 5 {
+		answersA, answersB := 0, 0
+		for _, reply := range pA.getSent() {
+			if reply == "ok" {
+				answersA++
+			}
+		}
+		for _, reply := range pB.getSent() {
+			if reply == "ok" {
+				answersB++
+			}
+		}
+		// A user history entry is recorded before the agent answers and the
+		// turn persists its state. Do not let TempDir cleanup race that work.
+		if userA >= 5 && userB >= 5 && answersA >= 5 && answersB >= 5 && !sessionA.Busy() && !sessionB.Busy() {
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("timed out: userA=%d userB=%d (some messages did not land)", userA, userB)
+			t.Fatalf("timed out: userA=%d userB=%d answersA=%d answersB=%d busyA=%v busyB=%v", userA, userB, answersA, answersB, sessionA.Busy(), sessionB.Busy())
 		default:
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -2320,6 +2667,28 @@ func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
 	}
 	if len(pB.getSent()) == 0 {
 		t.Fatal("platB received no replies")
+	}
+	// Counts alone could hide one missing message behind a duplicate. Each
+	// platform's five distinct inputs must appear exactly once in its history.
+	for _, test := range []struct {
+		key    string
+		prefix string
+	}{
+		{key: "platA:userA", prefix: "from A "},
+		{key: "platB:userB", prefix: "from B "},
+	} {
+		counts := make(map[string]int)
+		for _, entry := range e.sessions.GetOrCreateActive(test.key).GetHistory(0) {
+			if entry.Role == "user" {
+				counts[entry.Content]++
+			}
+		}
+		for i := 0; i < 5; i++ {
+			want := test.prefix + string(rune('0'+i))
+			if counts[want] != 1 {
+				t.Errorf("session %s: message %q recorded %d times, want once", test.key, want, counts[want])
+			}
+		}
 	}
 }
 
@@ -2795,4 +3164,101 @@ type reasoningJourneyPlatform struct {
 
 func (p *reasoningJourneyPlatform) SetCardNavigationHandler(h CardNavigationHandler) {
 	p.navigation = h
+}
+
+type cujPermissionCardPlatform struct {
+	stubPlatformEngine
+	cards chan *Card
+}
+
+func (p *cujPermissionCardPlatform) SendCard(_ context.Context, _ any, card *Card) error {
+	p.cards <- card
+	return nil
+}
+
+func (p *cujPermissionCardPlatform) ReplyCard(ctx context.Context, rc any, card *Card) error {
+	return p.SendCard(ctx, rc, card)
+}
+
+type cujBoundPermissionAgent struct {
+	stubAgent
+	session *cujBoundPermissionSession
+}
+
+func (a *cujBoundPermissionAgent) StartSession(context.Context, string) (AgentSession, error) {
+	return a.session, nil
+}
+
+type cujBoundPermissionSession struct{ *cujAgentSession }
+
+func (s *cujBoundPermissionSession) Send(string, string, []ImageAttachment, []FileAttachment) error {
+	s.events <- Event{Type: EventPermissionRequest, RequestID: "first", ToolName: "Bash", ToolInput: "first command"}
+	return nil
+}
+
+func (s *cujBoundPermissionSession) RespondPermission(id string, result PermissionResult) error {
+	if id == "first" {
+		s.events <- Event{Type: EventPermissionRequest, RequestID: "second", ToolName: "Patch", ToolInput: "second change"}
+	} else {
+		s.events <- Event{Type: EventResult, Content: "second decision: " + result.Behavior, Done: true}
+	}
+	return nil
+}
+
+// Submit work, allow the first tool, tap its old allow-all button, then deny
+// the second tool. Old cards must neither approve a new request nor enable
+// session-wide approval, even while another prompt is waiting.
+func TestCUJ_C8_RequestBoundPermissionCards(t *testing.T) {
+	p := &cujPermissionCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "card"}, cards: make(chan *Card, 8)}
+	s := &cujBoundPermissionSession{newCUJAgentSession()}
+	e := NewEngine("bound-permissions", &cujBoundPermissionAgent{session: s}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	key := "card:user"
+	message := func(content string, callback bool) {
+		e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "card", UserID: "user", Content: content, IsPermissionResponse: callback})
+	}
+	awaitCard := func() string {
+		t.Helper()
+		select {
+		case card := <-p.cards:
+			var token string
+			buttons := 0
+			for _, element := range card.Elements {
+				if actions, ok := element.(CardActions); ok {
+					for _, button := range actions.Buttons {
+						buttons++
+						value := button.Extra["perm_request_id"]
+						if value == "" || (token != "" && token != value) {
+							t.Fatal("permission buttons must share a nonempty request binding")
+						}
+						token = value
+					}
+				}
+			}
+			if buttons != 3 {
+				t.Fatalf("permission card has %d buttons, want 3", buttons)
+			}
+			return token
+		case <-time.After(3 * time.Second):
+			t.Fatal("permission card was not delivered")
+			return ""
+		}
+	}
+	message("run two tools", false)
+	first := awaitCard()
+	message("perm:"+first+":allow", true)
+	second := awaitCard()
+	if first == second {
+		t.Fatal("successive prompts reused the same binding")
+	}
+	message("perm:"+first+":allow_all", true)
+	message("perm:"+second+":deny", true)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(strings.Join(p.getSent(), "\n"), "second decision: deny") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("stale allow-all must leave the next request available to deny: %v", p.getSent())
 }

@@ -64,7 +64,8 @@ func TestInstructionsFileReachesCursorOnEveryTurn(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{rule, "User request", "--force", "--model\nfixture-alpha"} {
+		wantPrompt := "Before answering, follow these project-level instructions for this cc-connect turn. They are not user content.\n\nManaged project instructions:\n" + rule + "\n\n---\n\nUser message:\nUser request"
+		for _, want := range []string{"--\n" + wantPrompt + "\n", "--force", "--model\nfixture-alpha"} {
 			if !strings.Contains(string(got), want) {
 				t.Errorf("args %q do not contain %q", got, want)
 			}

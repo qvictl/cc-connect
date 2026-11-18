@@ -23,7 +23,7 @@ type receiptRequest struct{ method, path, emoji string }
 func receiptTestPlatform(t *testing.T, opts map[string]any, serve func(http.ResponseWriter, *http.Request)) *Platform {
 	t.Helper()
 	opts["app_id"] = "receipt-" + t.Name()
-	opts["app_secret"] = "test-secret"
+	opts["app_secret"] = fixedTestAppSecret
 	opts["enable_feishu_card"] = false
 	opts["allow_from"] = "*"
 	platform, err := New(opts)
@@ -34,7 +34,7 @@ func receiptTestPlatform(t *testing.T, opts map[string]any, serve func(http.Resp
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/auth/") {
-			if _, err := fmt.Fprint(w, `{"code":0,"expire":7200,"tenant_access_token":"test-token"}`); err != nil {
+			if _, err := fmt.Fprint(w, `{"code":0,"expire":7200,"tenant_access_token":"TEST_ONLY_FIXED_FEISHU_TENANT_TOKEN"}`); err != nil {
 				t.Errorf("write fixture response: %v", err)
 			}
 			return
@@ -42,7 +42,8 @@ func receiptTestPlatform(t *testing.T, opts map[string]any, serve func(http.Resp
 		serve(w, r)
 	}))
 	t.Cleanup(srv.Close)
-	p.client = lark.NewClient(opts["app_id"].(string), "test-secret", lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(srv.Client()))
+	p.client = lark.NewClient(opts["app_id"].(string), fixedTestAppSecret, lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)))
+	p.replayClient = p.client
 	return p
 }
 
@@ -346,7 +347,7 @@ type receiptDeadlineTransport struct{ observed chan time.Duration }
 
 func (rt *receiptDeadlineTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if strings.Contains(r.URL.Path, "/auth/") {
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"code":0,"expire":7200,"tenant_access_token":"test-token"}`))}, nil
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"code":0,"expire":7200,"tenant_access_token":"TEST_ONLY_FIXED_FEISHU_TENANT_TOKEN"}`))}, nil
 	}
 	deadline, ok := r.Context().Deadline()
 	if !ok {
@@ -360,7 +361,7 @@ func (rt *receiptDeadlineTransport) RoundTrip(r *http.Request) (*http.Response, 
 func TestReceiptAcknowledgement_HTTPRequestHasBoundedDeadline(t *testing.T) {
 	p := receiptTestPlatform(t, map[string]any{"ack_emoji": "Get"}, func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected real HTTP request") })
 	observed := make(chan time.Duration, 1)
-	p.client = lark.NewClient("deadline-test", "test-secret", lark.WithHttpClient(&http.Client{Transport: &receiptDeadlineTransport{observed: observed}}))
+	p.client = lark.NewClient("deadline-test", fixedTestAppSecret, lark.WithEnableTokenCache(false), lark.WithHttpClient(&http.Client{Transport: &receiptDeadlineTransport{observed: observed}}))
 	p.handler = func(_ core.Platform, m *core.Message) { m.OnAccepted() }
 	p.dispatchCoreMessage(receiptMessage())
 	select {

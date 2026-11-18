@@ -357,6 +357,8 @@
     "display": "Display",
     "thinkingMessages": "Thinking messages",
     "thinkingMessagesHint": "Show or hide intermediate thinking messages",
+    "commentaryMessages": "Commentary messages",
+    "commentaryMessagesHint": "Off by default: keep the usual text/card narration. Enable to send agent progress as separate messages, including in quiet mode.",
     "thinkingMaxLen": "Thinking max length",
     "thinkingMaxLenHint": "Max characters for thinking messages; 0 = no truncation",
     "toolMessages": "Tool progress",

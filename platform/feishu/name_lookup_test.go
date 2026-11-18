@@ -50,7 +50,7 @@ func newLookupServer(t *testing.T, chat, user lookupBehavior) *lookupServer {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
-			writeJSON(t, w, map[string]any{"code": 0, "msg": "success", "expire": 7200, "tenant_access_token": "t-token"})
+			writeJSON(t, w, map[string]any{"code": 0, "msg": "success", "expire": 7200, "tenant_access_token": fixedTestTenantToken})
 		case strings.HasPrefix(r.URL.Path, "/open-apis/im/v1/chats/"):
 			ls.chatCalls.Add(1)
 			switch chat {
@@ -87,7 +87,8 @@ func newLookupServer(t *testing.T, chat, user lookupBehavior) *lookupServer {
 }
 
 func (ls *lookupServer) platform(handler core.MessageHandler) *Platform {
-	const appID, appSecret = "cli_lookup", "secret-lookup"
+	const appID = "cli_lookup"
+	const appSecret = fixedTestAppSecret
 	return &Platform{
 		platformName: "feishu",
 		domain:       ls.srv.URL,
@@ -97,7 +98,8 @@ func (ls *lookupServer) platform(handler core.MessageHandler) *Platform {
 		dedup:        &core.MessageDedup{},
 		client: lark.NewClient(appID, appSecret,
 			lark.WithOpenBaseUrl(ls.srv.URL),
-			lark.WithHttpClient(ls.srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClientURL(ls.srv.URL)),
+			lark.WithEnableTokenCache(false),
 		),
 		handler: handler,
 	}

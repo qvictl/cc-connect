@@ -24,6 +24,9 @@ const DefaultMaxAttachmentSize int64 = 50 << 20
 // to send messages to active sessions.
 type APIServer struct {
 	socketPath string
+	socketInfo os.FileInfo
+	socketLock io.Closer
+	stopOnce   sync.Once
 	listener   net.Listener
 	server     *http.Server
 	mux        *http.ServeMux
@@ -60,6 +63,15 @@ type SendRequest struct {
 	Videos     []FileAttachment  `json:"videos,omitempty"`
 	AtUsers    []string          `json:"at_users,omitempty"`
 	AtAll      bool              `json:"at_all,omitempty"`
+	// Card is a card in the platform's own format (a Feishu card JSON
+	// object, for example), sent as it is. It stands alone: no message,
+	// tts_text or attachments with it. The response then carries the card's
+	// message_id, which POST /cards/update accepts.
+	Card json.RawMessage `json:"card,omitempty"`
+	// UUID, only with Card, is the platform's deduplication key for the
+	// send (at most MaxCardUUIDLen characters): a retry with the same uuid
+	// does not send a second card.
+	UUID string `json:"uuid,omitempty"`
 }
 
 // NewAPIServer creates an API server on a Unix socket.
@@ -69,27 +81,66 @@ func NewAPIServer(dataDir string) (*APIServer, error) {
 		return nil, fmt.Errorf("create run dir: %w", err)
 	}
 	sockPath := filepath.Join(sockDir, "api.sock")
-
-	// Remove stale socket
-	os.Remove(sockPath)
-
-	listener, err := net.Listen("unix", sockPath)
+	// Different configs can still resolve to the same data directory. Keep
+	// this lock for the listener's lifetime, including stale-socket recovery.
+	lock, err := lockAPISocket(sockPath + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("lock API socket: %w", err)
+	}
+	owned := false
+	defer func() {
+		if !owned {
+			_ = lock.Close()
+		}
+	}()
+	if info, err := os.Lstat(sockPath); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("API socket path is not a socket: %s", sockPath)
+		}
+		conn, dialErr := net.DialTimeout("unix", sockPath, time.Second)
+		if dialErr == nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("API socket is already listening: %s", sockPath)
+		}
+		// Only connection refusal proves a leftover socket. Timeouts and
+		// permission errors must never cause a live listener to be unlinked.
+		if !apiSocketConnectionRefused(dialErr) && !errors.Is(dialErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("check existing API socket: %w", dialErr)
+		}
+		if err := removeAPISocket(sockPath, info); err != nil {
+			return nil, fmt.Errorf("remove stale API socket: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat API socket: %w", err)
+	}
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: sockPath, Net: "unix"})
 	if err != nil {
 		return nil, fmt.Errorf("listen unix socket: %w", err)
 	}
+	// Close must not unlink a socket that another instance has replaced.
+	listener.SetUnlinkOnClose(false)
+	info, err := os.Lstat(sockPath)
+	if err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("stat new API socket: %w", err)
+	}
 	if err := os.Chmod(sockPath, 0o600); err != nil {
 		_ = listener.Close()
+		_ = removeAPISocket(sockPath, info)
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
 
 	s := &APIServer{
 		socketPath:         sockPath,
+		socketInfo:         info,
+		socketLock:         lock,
 		listener:           listener,
 		mux:                http.NewServeMux(),
 		engines:            make(map[string]*Engine),
 		maxAttachmentBytes: DefaultMaxAttachmentSize,
 	}
 	s.mux.HandleFunc("/send", s.handleSend)
+	s.mux.HandleFunc("/cards/update", s.handleCardsUpdate)
 	s.mux.HandleFunc("/sessions", s.handleSessions)
 	s.mux.HandleFunc("/cron/add", s.handleCronAdd)
 	s.mux.HandleFunc("/cron/list", s.handleCronList)
@@ -106,6 +157,7 @@ func NewAPIServer(dataDir string) (*APIServer, error) {
 	s.mux.HandleFunc("/relay/bind", s.handleRelayBind)
 	s.mux.HandleFunc("/relay/binding", s.handleRelayBinding)
 
+	owned = true
 	return s, nil
 }
 
@@ -182,14 +234,39 @@ func (s *APIServer) Start() {
 }
 
 func (s *APIServer) Stop() {
-	if s.server != nil {
-		if err := s.server.Close(); err != nil && err != http.ErrServerClosed {
-			slog.Debug("api server close failed", "error", err)
+	s.stopOnce.Do(func() {
+		if s.server != nil {
+			if err := s.server.Close(); err != nil && err != http.ErrServerClosed {
+				slog.Debug("api server close failed", "error", err)
+			}
 		}
+		if s.listener != nil {
+			_ = s.listener.Close()
+		}
+		if err := removeAPISocket(s.socketPath, s.socketInfo); err != nil {
+			slog.Debug("api server remove socket failed", "error", err)
+		}
+		if s.socketLock != nil {
+			_ = s.socketLock.Close()
+		}
+	})
+}
+
+func removeAPISocket(path string, owned os.FileInfo) error {
+	if owned == nil {
+		return nil
 	}
-	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
-		slog.Debug("api server remove socket failed", "error", err)
+	current, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
 	}
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(owned, current) {
+		return nil
+	}
+	return os.Remove(path)
 }
 
 func apiJSON(w http.ResponseWriter, status int, v any) {
@@ -198,6 +275,28 @@ func apiJSON(w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Error("api server: write JSON failed", "error", err)
 	}
+}
+
+// resolveEngine picks the engine a /send or /cards/update request targets:
+// the named project, or the only one when none is named. On failure it
+// returns a nil engine with the HTTP status and message to answer. An
+// unknown project name never falls back to the single engine -- that would
+// misroute the request (same rule as webhook.go and handleCronAdd).
+func (s *APIServer) resolveEngine(project string) (*Engine, int, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if project != "" {
+		if engine, ok := s.engines[project]; ok {
+			return engine, 0, ""
+		}
+		return nil, http.StatusNotFound, fmt.Sprintf("project %q not found", project)
+	}
+	if len(s.engines) == 1 {
+		for _, engine := range s.engines {
+			return engine, 0, ""
+		}
+	}
+	return nil, http.StatusBadRequest, "project is required (multiple projects configured)"
 }
 
 func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
@@ -217,34 +316,22 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if req.hasCard() {
+		s.sendCard(w, req)
+		return
+	}
+	if req.UUID != "" {
+		http.Error(w, "uuid is only accepted with card", http.StatusBadRequest)
+		return
+	}
 	if req.Message == "" && strings.TrimSpace(req.TTSText) == "" && len(req.Images) == 0 && len(req.Files) == 0 && len(req.Audios) == 0 && len(req.Videos) == 0 {
 		http.Error(w, "message, tts_text, or attachment is required", http.StatusBadRequest)
 		return
 	}
 
-	s.mu.RLock()
-	var engine *Engine
-	var ok bool
-	if req.Project != "" {
-		engine, ok = s.engines[req.Project]
-	} else if len(s.engines) == 1 {
-		// No project specified and only one engine: use it by default.
-		// Do NOT silently fall back when a non-empty project name is unknown —
-		// that misroutes the message to the wrong engine. Mirrors the resolve
-		// pattern in webhook.go and handleCronAdd.
-		for _, e := range s.engines {
-			engine = e
-			ok = true
-		}
-	}
-	s.mu.RUnlock()
-
-	if !ok {
-		if req.Project == "" {
-			http.Error(w, "project is required (multiple projects configured)", http.StatusBadRequest)
-			return
-		}
-		http.Error(w, fmt.Sprintf("project %q not found", req.Project), http.StatusNotFound)
+	engine, status, msg := s.resolveEngine(req.Project)
+	if engine == nil {
+		http.Error(w, msg, status)
 		return
 	}
 

@@ -357,6 +357,8 @@
     "display": "显示",
     "thinkingMessages": "思考消息",
     "thinkingMessagesHint": "显示或隐藏中间思考过程消息",
+    "commentaryMessages": "进展消息",
+    "commentaryMessagesHint": "默认关闭，保留原有的文本/卡片叙述。开启后将 Agent 进展作为独立消息发送，静默模式下也会发送。",
     "thinkingMaxLen": "思考最大长度",
     "thinkingMaxLenHint": "思考消息的最大字符数；0 = 不截断",
     "toolMessages": "工具进度",

@@ -915,25 +915,34 @@ func (p *Platform) handleComponentInteraction(s *discordgo.Session, i *discordgo
 		return
 	}
 
-	origText := ""
-	echo := "> " + command
-	if i.Message != nil {
-		origText = i.Message.Content
-		if strings.HasPrefix(data.CustomID, "askq:") {
-			if label := discordButtonLabel(i.Message.Components, data.CustomID); label != "" {
-				echo = "✅ " + label
+	if isPermissionResponse {
+		// Acknowledge receipt without presenting an unverified decision as final.
+		if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseDeferredMessageUpdate,
+		}); err != nil {
+			slog.Debug("discord: permission callback acknowledgement failed", "error", err)
+		}
+	} else {
+		origText := ""
+		echo := "> " + command
+		if i.Message != nil {
+			origText = i.Message.Content
+			if strings.HasPrefix(data.CustomID, "askq:") {
+				if label := discordButtonLabel(i.Message.Components, data.CustomID); label != "" {
+					echo = "✅ " + label
+				}
 			}
 		}
-	}
-	emptyComponents := []discordgo.MessageComponent{}
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{
-			Content:    origText + "\n\n" + echo,
-			Components: emptyComponents,
-		},
-	}); err != nil {
-		slog.Debug("discord: command component update failed", "error", err)
+		emptyComponents := []discordgo.MessageComponent{}
+		if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+			Data: &discordgo.InteractionResponseData{
+				Content:    origText + "\n\n" + echo,
+				Components: emptyComponents,
+			},
+		}); err != nil {
+			slog.Debug("discord: command component update failed", "error", err)
+		}
 	}
 
 	channelID := i.ChannelID
@@ -966,17 +975,12 @@ func discordComponentCommand(customID string) (command string, isPermissionRespo
 	if command, found := strings.CutPrefix(customID, "cmd:"); found && command != "" {
 		return command, false, true
 	}
-	// AskUserQuestion option: the engine parses the raw askq: value itself (#2157).
+	// AskUserQuestion options are validated by the engine.
 	if strings.HasPrefix(customID, "askq:") {
 		return customID, false, true
 	}
-	if action, found := strings.CutPrefix(customID, "perm:"); found {
-		switch action {
-		case "allow", "deny":
-			return action, true, true
-		case "allow_all":
-			return "allow all", true, true
-		}
+	if _, _, valid := core.ParsePermissionCallback(customID); valid {
+		return customID, true, true
 	}
 	return "", false, false
 }

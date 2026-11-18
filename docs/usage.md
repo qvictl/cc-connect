@@ -56,6 +56,8 @@ During a session, the agent may request tool permissions. Reply **allow** / **de
 
 Use `/ps` (or `/btw`) to add instructions while a task is running. An idle session rejects the command. The delivery confirmation means the bridge sent the request, not that the agent has finished processing it.
 
+With `busy_action = "inject"` on a project (default `"queue"`), you do not need to type `/ps` at all: a plain message sent while a task is running is delivered into that task automatically (reply: "Added to the current task") when the agent can take input mid-turn — Claude Code, and Codex in app-server mode (text only). If Claude Code has no tool call left when the message arrives, it answers the message right after the task; the bridge delivers both as one reply. Other agents, and messages that cannot be injected (for example while the agent is still starting, or an attachment for Codex), are queued and processed after the current task as before.
+
 With Pi, enable `rpc = true` for native steering: the supplement is queued for the next model call, after the current assistant turn's tool calls. If Pi has already finished while the bridge is still delivering its reply, the supplement starts a follow-up turn. Pi's default JSON mode keeps its existing one-shot sending behavior; it cannot inject into an already running process.
 
 Codex `/ps` steering requires an app-server that implements `turn/steer` (codex-cli 0.166.0 or newer). Older CLIs return a method-not-supported error; upgrade the Codex CLI to use this feature.
@@ -153,6 +155,51 @@ cmd = ["/path with spaces/codex", "--profile", "work"]
 
 This runs the bundled CLI using the existing Codex adapter. Desktop-only tools and shared-thread locking have separate requirements; see [Desktop backend discussion #651](https://github.com/chenhg5/cc-connect/issues/651) and [thread writer conflict #1909](https://github.com/chenhg5/cc-connect/issues/1909).
 
+### Native Codex Goals
+
+Use a Codex CLI with the native `thread/goal/*` API (verified with 0.164.0):
+
+```toml
+[projects.agent.options]
+backend = "app_server"
+app_server_url = "stdio"
+```
+
+| Chat command | Operation |
+|---|---|
+| `/goal` or `/goal show` | Read the objective, native status, token budget/usage and elapsed seconds |
+| `/goal set <objective> [--budget N]` or `/goal <objective>` | Create or replace a Goal and start native continuation |
+| `/goal edit <objective> [--budget N]` | Replace the objective, preserving its status and unspecified budget |
+| `/goal pause` | Pause continuation and interrupt the current turn |
+| `/goal resume` | Resume native continuation |
+| `/goal budget N` or `/goal budget none` | Set a positive token budget or remove it |
+| `/goal clear` | Remove the Goal and interrupt its current turn |
+
+Objectives are limited to 4,000 characters. Codex owns continuation, completion,
+usage and budget limits; cc-connect neither infers state from model text nor
+inserts continuation prompts. Changing the objective resets native usage
+accounting; updating status or budget preserves it. Lifecycle changes are sent
+to the chat; token-only updates do not produce messages. Regular messages during
+a running Goal steer the current turn, including attachments.
+
+`/stop` pauses the Goal before cancelling the turn. Active Goals prevent idle
+process cleanup. On restart, cc-connect reloads active Goals for each chat's
+selected session after its messaging platform becomes ready; Codex reconciles
+the persisted state. Paused/stopped Goals require `/goal resume`. Automatic
+recovery requires a platform that reconstructs reply contexts. A failed
+Goal-thread resume preserves the saved thread and reports failure instead of
+silently creating a new one.
+
+The `exec` backend is explicitly unsupported. This integration starts its own
+app-server, independently of the official desktop app. Use a separate
+`codex_home` if another client might load the same thread. A CLI without the
+required RPCs reports an error instead of treating `/goal` as a prompt. Goals
+must be enabled in Codex (`codex features enable goals` if needed). This path
+uses no rollout parser or `goal_auto_continue` setting.
+
+After budget exhaustion, a paused Goal may still report the native
+`budgetLimited` status. Increase or remove its budget before `/goal resume`.
+
 ### Codex home directory (`codex_home`)
 
 By default the Codex adapter uses the same Codex home as your terminal and the Codex desktop app. The adapter resolves the home in this order: the project `codex_home` option, then `CODEX_HOME` from the environment that starts cc-connect, then `~/.codex`. A configured `codex_home` is exported as `CODEX_HOME` to the Codex CLI for both the `exec` and `app_server` backends, and `/list` reads sessions from the same resolved home.
@@ -190,7 +237,12 @@ Then set the absolute path under `[projects.agent.options]`, for example `/Users
 For Cursor projects, the optional `instructions_file` setting under `[projects.agent.options]`
 prepends a UTF-8 file to each prompt, including resumed turns. The file is read again on
 every turn so edits take effect without restarting the agent. An unreadable file rejects
-the turn explicitly. Leave it unset to keep the existing prompt behavior.
+the turn explicitly. Nonempty files are labeled as managed project instructions, followed
+by a separate user-message section; this framing is not a security boundary. Leave it
+unset to keep the existing prompt behavior; an empty file retains the two-newline prefix.
+Use an absolute path: relative paths resolve against the cc-connect process working
+directory, not `work_dir` or the configuration file's directory. Keep files concise and
+UTF-8 encoded; no size limit or encoding validation is applied.
 
 `/memory` reads and appends `<work_dir>/AGENTS.md`, which the Cursor CLI loads on every session. `/cron setup` writes the same file. If you set `instructions_file`, point it at that same `AGENTS.md`; `/memory` still writes `<work_dir>/AGENTS.md` when the two paths differ. Cursor has no user-level memory file, so `/memory global` is unsupported.
 
@@ -900,6 +952,38 @@ Notes:
 - There must be an active session; otherwise the command fails because cc-connect has no chat context to deliver to.
 - The target platform also enforces its own file-size/type limit at delivery; the effective per-attachment ceiling is the smaller of that limit and `max_attachment_size_mb` (a file that passes cc-connect may still be rejected by the platform).
 
+## Platform-Native Cards
+
+Scripts and agents can send a card authored in the platform's own format
+(currently Feishu/Lark card JSON) and later replace it in place, for example
+to turn a "running" status card into a "done" card.
+
+```bash
+# Send: prints the card's message id
+id=$(cc-connect send --card /tmp/build-card.json --uuid build-1234)
+
+# Replace the same card later through the local API
+curl --unix-socket ~/.cc-connect/run/api.sock -X POST http://unix/cards/update \
+  -H 'Content-Type: application/json' \
+  -d "{\"message_id\":\"$id\",\"card\":$(cat /tmp/build-done-card.json)}"
+```
+
+- `POST /send` accepts `card` (a JSON object) instead of `message`; a card is
+  sent unchanged and cannot be combined with `message`, `tts_text` or
+  attachments, nor with `at_users` / `at_all` (put mentions inside the card).
+  The response is `{"status":"ok","message_id":"..."}`; `cc-connect send
+  --card` prints the id and exits non-zero if the response carries none.
+- `uuid` (with `card` only, at most 50 characters) is passed to the platform
+  as its deduplication key, so a retried send with the same key does not post
+  a second card. On Feishu the key is honoured for about an hour; reusing it
+  after that window sends another card.
+- `POST /cards/update` takes `message_id` and `card`, plus optional `project`
+  and `session_key` (needed only when a project has several card-capable
+  platforms; the platform is resolved from it the same way `/send` does,
+  workspace-prefixed keys included). It shares `/send`'s body size limit and
+  outgoing rate limit.
+- Platforms that cannot send or update raw cards answer `501 Not Implemented`.
+
 ---
 
 ## Lifecycle Hooks
@@ -1125,6 +1209,13 @@ This automatically enables both the **Management API** and the **Bridge** in `co
 After setup, open the URL shown (default `http://localhost:9820`) and log in with the token.
 
 ### Check Status
+
+`/status` reports local API startup failures, including the reason and the impact
+on `cc-connect send`. Messaging platforms remain available. When management is
+enabled, `/api/v1/status` also includes `api_startup_error` on failure. Check for
+another instance using the same data directory, or an unexpected file at
+`run/api.sock`, and resolve the conflict before restarting. Do not delete a live
+instance's socket.
 
 ```
 /web           # or /web status — show current web admin URL and status

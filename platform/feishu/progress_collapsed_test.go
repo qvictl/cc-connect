@@ -40,7 +40,7 @@ func TestProgressCards_PanelsStayCollapsed(t *testing.T) {
 				t.Fatalf("panel count = %d, want %d: %#v", len(panels), tc.panels, panels)
 			}
 			for _, panel := range panels {
-				if expanded, _ := panel["expanded"].(bool); expanded {
+				if expanded, ok := panel["expanded"].(bool); !ok || expanded {
 					t.Fatalf("panel %q is expanded, want collapsed: %#v", cardPanelTitle(panel), panel)
 				}
 			}

@@ -44,8 +44,9 @@ type ManagementServer struct {
 	server      *http.Server
 	startedAt   time.Time
 
-	mu      sync.RWMutex
-	engines map[string]*Engine // project name → engine
+	mu              sync.RWMutex
+	engines         map[string]*Engine // project name → engine
+	apiStartupError string             // guarded by mu
 
 	cronScheduler      *CronScheduler
 	timerScheduler     *TimerScheduler
@@ -90,6 +91,17 @@ func (m *ManagementServer) RegisterEngine(name string, e *Engine) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.engines[name] = e
+}
+
+// SetAPIStartupError reports local API startup degradation to status clients.
+// It is safe to call after the management server has started.
+func (m *ManagementServer) SetAPIStartupError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.apiStartupError = ""
+	if err != nil {
+		m.apiStartupError = err.Error()
+	}
 }
 
 func (m *ManagementServer) SetCronScheduler(cs *CronScheduler)           { m.cronScheduler = cs }
@@ -441,6 +453,9 @@ func (m *ManagementServer) handleStatus(w http.ResponseWriter, r *http.Request) 
 		"projects_count":      len(m.engines),
 		"bridge_adapters":     adapters,
 		"degraded_platforms":  degradedEntries,
+	}
+	if m.apiStartupError != "" {
+		resp["api_startup_error"] = m.apiStartupError
 	}
 	if m.bridgeServer != nil {
 		resp["bridge"] = map[string]any{

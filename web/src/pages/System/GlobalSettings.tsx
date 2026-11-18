@@ -18,6 +18,9 @@ function Toggle({ value, onChange, label, hint }: { value: boolean; onChange: (v
       </div>
       <button
         type="button"
+        role="switch"
+        aria-checked={value}
+        aria-label={label}
         onClick={() => onChange(!value)}
         className={cn(
           'w-10 h-6 rounded-full transition-colors shrink-0',
@@ -76,6 +79,7 @@ export default function GlobalSettings() {
   const [logLevel, setLogLevel] = useState('info');
   const [idleTimeout, setIdleTimeout] = useState(120);
   const [thinkingMessages, setThinkingMessages] = useState(true);
+  const [commentaryMessages, setCommentaryMessages] = useState(false);
   const [thinkingMaxLen, setThinkingMaxLen] = useState(300);
   const [toolMessages, setToolMessages] = useState(true);
   const [toolMaxLen, setToolMaxLen] = useState(500);
@@ -93,6 +97,7 @@ export default function GlobalSettings() {
       setLogLevel(s.log_level || 'info');
       setIdleTimeout(s.idle_timeout_mins ?? 120);
       setThinkingMessages(s.thinking_messages ?? true);
+      setCommentaryMessages(s.commentary_messages ?? false);
       setThinkingMaxLen(s.thinking_max_len ?? 300);
       setToolMessages(s.tool_messages ?? true);
       setToolMaxLen(s.tool_max_len ?? 500);
@@ -109,6 +114,12 @@ export default function GlobalSettings() {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    const handler = () => { void load(); };
+    window.addEventListener('cc:refresh', handler);
+    return () => window.removeEventListener('cc:refresh', handler);
+  }, [load]);
+
   const handleSave = async () => {
     setSaving(true);
     setMsg('');
@@ -119,6 +130,7 @@ export default function GlobalSettings() {
         log_level: logLevel,
         idle_timeout_mins: idleTimeout,
         thinking_messages: thinkingMessages,
+        commentary_messages: commentaryMessages,
         thinking_max_len: thinkingMaxLen,
         tool_messages: toolMessages,
         tool_max_len: toolMaxLen,
@@ -184,6 +196,12 @@ export default function GlobalSettings() {
             value={thinkingMessages}
             onChange={setThinkingMessages}
             hint={t('settings.thinkingMessagesHint', 'Show or hide intermediate thinking messages')}
+          />
+          <Toggle
+            label={t('settings.commentaryMessages', 'Commentary messages')}
+            value={commentaryMessages}
+            onChange={setCommentaryMessages}
+            hint={t('settings.commentaryMessagesHint', 'Off by default: keep the usual text/card narration. Enable to send agent progress as separate messages, including in quiet mode.')}
           />
           <NumberInput
             label={t('settings.thinkingMaxLen', 'Thinking max length')}

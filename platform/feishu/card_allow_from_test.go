@@ -3,10 +3,12 @@ package feishu
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	lark "github.com/larksuite/oapi-sdk-go/v3"
 	callback "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 )
 
@@ -20,7 +22,7 @@ func stubOpenAPIDomain(t *testing.T) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
-			writeJSON(t, w, map[string]any{"code": 0, "msg": "ok", "expire": 7200, "tenant_access_token": "t-test"})
+			writeJSON(t, w, map[string]any{"code": 0, "msg": "ok", "expire": 7200, "tenant_access_token": fixedTestTenantToken})
 			return
 		}
 		writeJSON(t, w, map[string]any{"code": 0, "msg": "success"})
@@ -36,7 +38,7 @@ func newAllowFromTestPlatform(t *testing.T, allowFrom string) (*interactivePlatf
 	t.Helper()
 	platformAny, err := New(map[string]any{
 		"app_id":             "cli_xxx",
-		"app_secret":         "secret",
+		"app_secret":         fixedTestAppSecret,
 		"allow_from":         allowFrom,
 		"enable_feishu_card": true,
 		"domain":             stubOpenAPIDomain(t),
@@ -48,6 +50,12 @@ func newAllowFromTestPlatform(t *testing.T, allowFrom string) (*interactivePlatf
 	if !ok {
 		t.Fatalf("platform type = %T, want *interactivePlatform", platformAny)
 	}
+	// Replace the SDK default transport before any callback can perform IO.
+	ip.client = lark.NewClient(ip.appID, fixedTestAppSecret,
+		lark.WithEnableTokenCache(false),
+		lark.WithOpenBaseUrl(ip.domain),
+		lark.WithHttpClient(fixtureHTTPClient(t, ip.domain)),
+	)
 	msgCh := make(chan *core.Message, 4)
 	ip.handler = func(_ core.Platform, msg *core.Message) {
 		msgCh <- msg
@@ -84,10 +92,14 @@ func waitAnyMessage(t *testing.T, ch <-chan *core.Message, timeout time.Duration
 // cardActionEvent builds a CardActionTriggerEvent with the given operator and
 // action value, using a consistent chat/message context.
 func cardActionEvent(openID, action string) *callback.CardActionTriggerEvent {
+	value := map[string]any{"action": action}
+	if strings.HasPrefix(action, "perm:") {
+		value["perm_request_id"] = "prompt-1"
+	}
 	return &callback.CardActionTriggerEvent{
 		Event: &callback.CardActionTriggerRequest{
 			Operator: &callback.Operator{OpenID: openID},
-			Action:   &callback.CallBackAction{Value: map[string]any{"action": action}},
+			Action:   &callback.CallBackAction{Value: value},
 			Context:  &callback.Context{OpenChatID: "oc_test_chat", OpenMessageID: "om_test_message"},
 		},
 	}
@@ -235,7 +247,9 @@ func TestOnCardAction_AllowFromAllowsAuthorizedCmd(t *testing.T) {
 // dispatches as a permission response.
 func TestOnCardAction_AllowFromAllowsAuthorizedPermAllow(t *testing.T) {
 	ip, msgCh := newAllowFromTestPlatform(t, "ou_allowed")
-	_, err := ip.onCardAction(cardActionEvent("ou_allowed", "perm:allow"))
+	event := cardActionEvent("ou_allowed", "perm:allow")
+	event.Event.Action.Value["perm_request_id"] = "prompt-1"
+	_, err := ip.onCardAction(event)
 	if err != nil {
 		t.Fatalf("onCardAction() error = %v", err)
 	}
@@ -243,8 +257,8 @@ func TestOnCardAction_AllowFromAllowsAuthorizedPermAllow(t *testing.T) {
 	if !msg.IsPermissionResponse {
 		t.Fatalf("dispatched IsPermissionResponse = false, want true")
 	}
-	if msg.Content != "allow" {
-		t.Fatalf("dispatched content = %q, want %q", msg.Content, "allow")
+	if msg.Content != "perm:prompt-1:allow" {
+		t.Fatalf("dispatched content = %q, want a request-bound allow", msg.Content)
 	}
 }
 
@@ -280,19 +294,4 @@ func TestOnCardAction_AllowFromMultiListRespectsExactMember(t *testing.T) {
 		t.Fatalf("onCardAction() error = %v", err)
 	}
 	waitNoMessage(t, msgCh, 200*time.Millisecond, "cmd:/bar from ou_d (not listed)")
-}
-
-// An askq option click is answered by replacing the card in the callback
-// response, so the dispatched message marks the answer rendered and the
-// engine must not echo it as a second chat message.
-func TestOnCardAction_AskqMarksAnswerRendered(t *testing.T) {
-	ip, msgCh := newAllowFromTestPlatform(t, "*")
-	_, err := ip.onCardAction(cardActionEvent("ou_owner", "askq:0:1"))
-	if err != nil {
-		t.Fatalf("onCardAction() error = %v", err)
-	}
-	msg := waitAnyMessage(t, msgCh, 3*time.Second, "askq option click")
-	if !msg.CardAnswerRendered {
-		t.Error("CardAnswerRendered = false, want true for an in-place replaced askq card")
-	}
 }

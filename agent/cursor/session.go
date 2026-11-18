@@ -78,13 +78,30 @@ func newCursorSession(ctx context.Context, cmd string, extraArgs []string, workD
 	return cs, nil
 }
 
+// prependCursorInstructions labels project instructions separately from the user
+// message. These are prompt conventions, not a security or role boundary.
+func prependCursorInstructions(prompt, instructionsFile string) (string, error) {
+	if instructionsFile == "" {
+		return prompt, nil
+	}
+	// Preserve resolution relative to the cc-connect process working directory.
+	instructions, err := os.ReadFile(instructionsFile)
+	if err != nil {
+		return "", fmt.Errorf("cursor: read instructions file: %w", err)
+	}
+	if len(instructions) == 0 {
+		// Preserve the existing empty-file behavior without adding instructions.
+		return "\n\n" + prompt, nil
+	}
+	return "Before answering, follow these project-level instructions for this cc-connect turn. They are not user content.\n\n" +
+		"Managed project instructions:\n" + string(instructions) + "\n\n---\n\nUser message:\n" + prompt, nil
+}
+
 func (cs *cursorSession) Send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
-	if cs.instructionsFile != "" {
-		instructions, err := os.ReadFile(cs.instructionsFile)
-		if err != nil {
-			return fmt.Errorf("cursor: read instructions file: %w", err)
-		}
-		prompt = string(instructions) + "\n\n" + prompt
+	var err error
+	prompt, err = prependCursorInstructions(prompt, cs.instructionsFile)
+	if err != nil {
+		return err
 	}
 
 	if len(images) > 0 {

@@ -149,6 +149,7 @@ func (e *Env) Click(action string, timeout time.Duration) *bbplatform.SentMessag
 //
 // agentType selects the agent: "claudecode", "codex", "gemini", etc.
 // The test is skipped (not failed) when:
+//   - -blackbox-live was not explicitly supplied
 //   - the agent CLI binary is not in PATH
 //   - the required API credentials are missing from the environment
 //
@@ -190,6 +191,14 @@ func NewEnvWithOptions(t *testing.T, agentType string, o Options) *Env {
 		t.Skip("blackbox skip: this test configures the in-process engine directly (backend=binary)")
 	}
 
+	live := needsLiveProvider(o)
+	if live && !*allowLiveProviders {
+		t.Skip("blackbox skip: live providers require explicit -blackbox-live authorization")
+	}
+	if !live && backend != BackendBinary {
+		t.Fatal("blackbox: credential-free tests require the isolated binary backend; in-process agents inherit the parent environment and configuration")
+	}
+
 	var fake *fakemodel.Server
 	switch {
 	case o.FakeModel:
@@ -221,16 +230,22 @@ func NewEnvWithOptions(t *testing.T, agentType string, o Options) *Env {
 		opts[k] = v
 	}
 
-	if fake == nil {
+	if live {
 		applyProviderFromEnv(t, agentType, opts)
-	} else if agentType == "codex" {
+	} else if fake != nil && agentType == "codex" {
 		// cc-connect writes the provider into $CODEX_HOME/config.toml and
 		// auth.json; keep that away from the developer's ~/.codex.
 		opts["codex_home"] = lingeringTempDir(t, "codex-home-")
 	}
 
 	if backend == BackendBinary {
-		provider := providerFromEnv(agentType)
+		var provider map[string]any
+		if live {
+			provider = providerFromEnv(agentType)
+			if provider == nil {
+				t.Skip("blackbox skip: isolated live binary tests require an explicit CC_BLACKBOX_<AGENT>_API_KEY provider")
+			}
+		}
 		if fake != nil {
 			provider = fakeProvider(fake, agentType).toml()
 		}
@@ -254,7 +269,7 @@ func NewEnvWithOptions(t *testing.T, agentType string, o Options) *Env {
 		pc := fakeProvider(fake, agentType)
 		ps.SetProviders([]core.ProviderConfig{pc.core()})
 		ps.SetActiveProvider(pc.Name)
-	} else {
+	} else if live {
 		wireProviders(t, agentType, agent)
 	}
 

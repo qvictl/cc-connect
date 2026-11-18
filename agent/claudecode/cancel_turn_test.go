@@ -417,3 +417,32 @@ func TestBeginCancelWait_RejectsRegistrationAfterTermination(t *testing.T) {
 		t.Fatal("beginCancelWait registered a waiter after the turn had terminated")
 	}
 }
+
+// A held result from the preceding native turn is not evidence that the
+// follow-up turn is idle once its system/init notification arrives.
+func TestCancelTurn_FollowUpInitRestoresActiveTurn(t *testing.T) {
+	cs, _ := newCancelTestSession(t, time.Second)
+	cs.turnActive.Store(false)
+	cs.heldResult = &core.Event{Type: core.EventResult, Done: true}
+	cs.heldTimer = time.NewTimer(time.Hour)
+	defer cs.heldTimer.Stop()
+	cs.midTurnPending = []uint64{1}
+	cs.followUpTurnStarted()
+	if !cs.turnActive.Load() || cs.heldResult != nil || cs.mergedResult == nil {
+		t.Fatal("follow-up init must retain merged usage and mark the native turn active")
+	}
+	wait, waiting := cs.beginCancelWait()
+	if !waiting {
+		t.Fatal("follow-up cancellation incorrectly took the idle path")
+	}
+	cs.endCancelWait(wait)
+}
+
+func TestCancelTurn_UnrelatedInitDoesNotInventActiveTurn(t *testing.T) {
+	cs, _ := newCancelTestSession(t, time.Second)
+	cs.turnActive.Store(false)
+	cs.followUpTurnStarted()
+	if cs.turnActive.Load() {
+		t.Fatal("init without a held follow-up must not invent active work")
+	}
+}

@@ -1,53 +1,62 @@
 # Blackbox tests
 
-## Release smoke (run before every release)
+## Credential-free source smoke
 
 ```bash
-make test-release-smoke                                   # current tree
-CC_BLACKBOX_BINARY=dist/cc-connect-<ver>-<os>-<arch> \
-CC_BLACKBOX_EXPECT_VERSION=<ver> make test-release-smoke  # the artifact you will publish
+make test-release-smoke
 ```
 
-Needs Go, plus the Claude Code (`claude`) and Codex (`codex`) CLIs on PATH. No
-model key and no IM account are needed: the agents talk to a scripted fake
-model, and the test drives cc-connect through its bridge like a chat platform.
-It takes about 3–4 minutes with `-race`. On macOS, point `TMPDIR` at a
-directory without symlinks (for example `~/.cache/qa-tmp`).
+Needs Go and the Claude Code (`claude`) and Codex (`codex`) CLIs on PATH.
+It builds the current source with `no_web,cc_blackbox_loopback`, uses a
+private child environment and home, and talks to a scripted loopback model.
+The bridge binds `127.0.0.1` before the fixed
+`TEST_ONLY_BLACKBOX_BRIDGE_TOKEN` fixture is used. Ordinary production builds
+keep their existing listener behavior and cryptographic randomness.
 
-The run is **fail-closed**: a missing agent CLI fails it instead of skipping
-(`CC_BLACKBOX_REQUIRE_AGENTS`, default `claudecode,codex`). With
-`CC_BLACKBOX_EXPECT_VERSION` set, `/version` must report that version, which
-proves the artifact itself was tested. The release flow runs this as its
-`release-smoke` gate before publishing; a failure holds the release.
+`CC_BLACKBOX_BINARY` is rejected before launch or fixture config creation.
+An old binary can advertise an unused build tag without implementing it, so
+metadata alone is not a safe listener guarantee. This suite validates a
+test-instrumented source build, **not an ordinary release artifact**. Never
+publish a binary built with `cc_blackbox_loopback` as a release artifact.
 
-**A PASS means** that, for Claude Code and Codex, on the real binary and the
-in-process engine, and across platform capability profiles (text-only,
-buttons, cards, streaming previews):
+The run fails if a required CLI is absent (`CC_BLACKBOX_REQUIRE_AGENTS`,
+default `claudecode,codex`). Credential-free smoke runs only the binary
+backend. Explicit credential-free in-process requests fail before agent
+construction, because that mode shares the parent's environment and home.
+This reduces in-process coverage; it does not silently claim both backends.
 
-| Area | Checked |
-| --- | --- |
-| Startup | the binary starts from a generated config, the bridge accepts an adapter and rejects a wrong token, `/version` is the release version |
-| Conversation | a message reaches the model and the answer reaches the user; the next turn carries the previous one; long answers are previewed and end complete; images reach the model |
-| Tools and permissions | a tool call runs and its output reaches the model; a permission prompt appears (buttons where the platform has them, text otherwise), allow runs the tool, deny keeps it from running |
-| Sessions | `/new` separates conversations, `/list` shows them, `/switch` restores the right context; `/stop` ends a running turn and the next message resumes the session; a restarted binary still lists and resumes the session |
-| Users | two users' conversations never reach each other's model |
-| Failures | a model/provider error is shown to the user, and the next message works |
-| Commands and cards | `/help`, `/status`, `/list` answer on every profile; card buttons click through; text-only platforms never receive buttons |
+The child and build subprocess environment copies only `PATH`, `SystemRoot`
+and `WINDIR`. Home, agent configuration, XDG, Windows profile and temporary
+directories are private. Fake Codex uses a separate fresh private directory
+under the test cache root for its helper-binary compatibility, rather than
+the usual login/config directory. Provider credentials, proxies, agent overrides,
+loader options and other parent variables are not inherited. `NoCredentials`
+cases do not discover or wire provider credentials. These measures are not
+an OS or outbound-network sandbox: real CLIs can run tools, access other
+files, use system credential facilities, or contact other services. Other
+processes on the same host can reach loopback and know the fixture token.
 
-**A PASS does not cover**: real IM platforms (Feishu, Telegram, Slack, …:
-their APIs, rendering and limits; see the release flow's channel smoke),
-answers from a real model (`TestSmoke_AgentTurn` runs only with credentials),
-agents other than Claude Code and Codex, and how cards look.
+## Explicit live-provider tests
 
-## Running blackbox tests
-
-Blackbox tests drive cc-connect the way a user does: inject a chat message,
-assert on what the platform receives. The agent side is a real agent CLI.
+Credentials in the environment alone never enable live-provider tests.
+They skip unless the test command explicitly includes `-blackbox-live`.
+Only use that flag for a separately authorized live run. The isolated
+binary backend additionally needs an explicit `CC_BLACKBOX_<AGENT>_API_KEY`
+provider; normal login state and generic inherited keys are not copied.
+In-process live tests retain their existing credential behavior behind the
+same explicit flag. Fake-model tests are still not cleared for execution
+merely by this source change.
 
 ```bash
-go test -tags blackbox -count=1 ./tests/blackbox/smoke/   # no model credentials needed
-go test -tags blackbox -count=1 ./tests/blackbox/p0/      # needs model credentials
+go test -tags blackbox -count=1 ./tests/blackbox/smoke/
+# Separately authorized live run only:
+go test -tags blackbox -count=1 ./tests/blackbox/p0/ -args -blackbox-live
 ```
+
+Pure regression sources cover the environment allowlist, private paths,
+provider-mode classification and default/tagged listener address. Run the
+listener regressions in both ordinary and `cc_blackbox_loopback` builds
+when execution is authorized. Source review is not a runtime test pass.
 
 ## Fake model
 
@@ -85,10 +94,12 @@ well.
 | `inprocess` (default) | `core.Engine` inside the test process | engine, commands, sessions, agent adapter |
 | `binary` | the real `cc-connect` process, reached through its bridge WebSocket (`docs/bridge-protocol.md`) | everything above plus config loading, startup, the bridge transport and the agent subprocess as deployed |
 
-The binary backend builds `./cmd/cc-connect` once per test run with
-`-tags no_web`, or uses `CC_BLACKBOX_BINARY` (for example a release artifact
-in `dist/`). Each `Env` gets its own `HOME`, data dir, config, random ports
-and bridge token; the process log tail is printed when a test fails.
+The binary backend builds `./cmd/cc-connect` once with
+`-tags no_web,cc_blackbox_loopback`. Each environment has its own private
+home, data dir, config and free ports. Authentication is a fixed test-only
+fixture. A failure prints the process log tail with that fixture redacted.
+It never accepts a prebuilt binary. Credential-free callers must explicitly
+select `Options{Backend: BackendBinary}` or `CC_BLACKBOX_BACKEND=binary`.
 
 Tests that call `NewEnvWithSetup` or touch `env.Engine` need the in-process
 engine and skip on the binary backend (`env.RequireInProcess()`).

@@ -102,19 +102,30 @@ func discordProgressItems(payload *core.ProgressCardPayload) []core.ProgressCard
 }
 
 func buildDiscordProgressLine(item core.ProgressCardEntry, lang string) string {
+	prefix := ""
+	if !item.Timestamp.IsZero() {
+		prefix = item.Timestamp.Format("15:04:05")
+		if !item.ResultTimestamp.IsZero() {
+			prefix += " → " + item.ResultTimestamp.Format("15:04:05")
+		}
+		prefix += " · "
+	}
 	text := compactDiscordProgressText(item.Text)
+	marker := "• "
 	switch item.Kind {
 	case core.ProgressEntryThinking:
-		return "💭 " + trimDiscordRunes(text, maxDiscordProgressLineLen-2)
+		marker = "💭 "
 	case core.ProgressEntryToolUse:
-		return "🔧 " + trimDiscordRunes(buildDiscordToolUseSummary(item, lang), maxDiscordProgressLineLen-2)
+		marker = "🔧 "
+		text = buildDiscordToolUseSummary(item, lang)
 	case core.ProgressEntryToolResult:
-		return "🧾 " + trimDiscordRunes(buildDiscordToolResultSummary(item, lang), maxDiscordProgressLineLen-2)
+		marker = "🧾 "
+		text = buildDiscordToolResultSummary(item, lang)
 	case core.ProgressEntryError:
-		return "❌ " + trimDiscordRunes(text, maxDiscordProgressLineLen-2)
-	default:
-		return "• " + trimDiscordRunes(text, maxDiscordProgressLineLen-2)
+		marker = "❌ "
 	}
+	// Include the timestamp in the existing per-row character budget.
+	return prefix + marker + trimDiscordRunes(text, maxDiscordProgressLineLen-utf8.RuneCountInString(prefix+marker))
 }
 
 func buildDiscordToolUseSummary(item core.ProgressCardEntry, lang string) string {
@@ -132,7 +143,10 @@ func buildDiscordToolUseSummary(item core.ProgressCardEntry, lang string) string
 func buildDiscordToolResultSummary(item core.ProgressCardEntry, lang string) string {
 	toolName := strings.TrimSpace(item.Tool)
 	text := compactDiscordProgressText(item.Text)
-	meta := make([]string, 0, 3)
+	meta := make([]string, 0, 4)
+	if input := compactDiscordProgressText(core.TruncateToolOutput(item.Input, maxDiscordProgressLineLen/2)); input != "" {
+		meta = append(meta, input)
+	}
 
 	if status := discordProgressStatusText(item, lang); status != "" {
 		meta = append(meta, status)

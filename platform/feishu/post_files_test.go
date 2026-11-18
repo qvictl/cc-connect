@@ -71,8 +71,8 @@ func TestDispatchPostPreservesFileAttachments(t *testing.T) {
 			p := &Platform{
 				platformName:         "feishu",
 				domain:               srv.URL,
-				resourceDownloadHTTP: srv.Client(),
-				fetchResourceToken:   func(_ context.Context) (string, error) { return "test-token", nil },
+				resourceDownloadHTTP: fixtureHTTPClient(t, srv.URL),
+				fetchResourceToken:   func(_ context.Context) (string, error) { return fixedTestTenantToken, nil },
 				handler:              func(_ core.Platform, m *core.Message) { got = m },
 			}
 			p.dispatchMessage(context.Background(), "post", tc.body, nil, "om_post", "session", "", "", replyContext{}, "", 0)
@@ -168,8 +168,8 @@ func TestFormatMergeForwardTreeSurfacesPostFiles(t *testing.T) {
 	p := &Platform{
 		platformName:         "feishu",
 		domain:               srv.URL,
-		resourceDownloadHTTP: srv.Client(),
-		fetchResourceToken:   func(_ context.Context) (string, error) { return "test-token", nil },
+		resourceDownloadHTTP: fixtureHTTPClient(t, srv.URL),
+		fetchResourceToken:   func(_ context.Context) (string, error) { return fixedTestTenantToken, nil },
 	}
 	var sb strings.Builder
 	var files []core.FileAttachment
@@ -205,8 +205,8 @@ func TestDownloadQuotedFilesUsesContentSniffing(t *testing.T) {
 	p := &Platform{
 		platformName:         "feishu",
 		domain:               srv.URL,
-		resourceDownloadHTTP: srv.Client(),
-		fetchResourceToken:   func(_ context.Context) (string, error) { return "test-token", nil },
+		resourceDownloadHTTP: fixtureHTTPClient(t, srv.URL),
+		fetchResourceToken:   func(_ context.Context) (string, error) { return fixedTestTenantToken, nil },
 	}
 	got := p.downloadQuotedFiles(context.Background(), []quotedFileMeta{{fileKey: "file_a", fileName: "a.csv", messageID: "om_parent", senderID: "ou_owner"}})
 	if len(got) != 1 || strings.HasPrefix(got[0].MimeType, "image/") {
@@ -225,8 +225,8 @@ func TestDispatchFileMessageUsesContentSniffing(t *testing.T) {
 	p := &Platform{
 		platformName:         "feishu",
 		domain:               srv.URL,
-		resourceDownloadHTTP: srv.Client(),
-		fetchResourceToken:   func(_ context.Context) (string, error) { return "test-token", nil },
+		resourceDownloadHTTP: fixtureHTTPClient(t, srv.URL),
+		fetchResourceToken:   func(_ context.Context) (string, error) { return fixedTestTenantToken, nil },
 		handler:              func(_ core.Platform, m *core.Message) { got = m },
 	}
 	p.dispatchMessage(context.Background(), "file", `{"file_key":"file_a","file_name":"a.csv"}`, nil, "om_file", "session", "", "", replyContext{}, "", 0)

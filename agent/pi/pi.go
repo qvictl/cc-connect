@@ -355,11 +355,12 @@ func thinkingLevelsForDef(m *piModel) []string {
 	var out []string
 	for _, level := range allThinkingLevels {
 		mapped, present := m.ThinkingLevelMap[level]
+		_, mappedString := mapped.(string)
 		switch {
 		case present && mapped == nil:
 			// Explicitly disabled for this model.
-		case !present && (level == "xhigh" || level == "max"):
-			// Only offered when the model explicitly maps them.
+		case (level == "xhigh" || level == "max") && !mappedString:
+			// Only offered when the model explicitly maps them to a string.
 		default:
 			out = append(out, level)
 		}
@@ -678,11 +679,39 @@ type piModel struct {
 	ContextWindow    int            `json:"contextWindow"`
 	Reasoning        bool           `json:"reasoning"`
 	ThinkingLevelMap map[string]any `json:"thinkingLevelMap"`
+
+	reasoningPresent   bool
+	thinkingMapPresent bool
+}
+
+// Preserve field presence so a partial custom definition can inherit catalog
+// capabilities without confusing an omitted field with an explicit override.
+func (m *piModel) UnmarshalJSON(data []byte) error {
+	type modelJSON piModel
+	var decoded modelJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*m = piModel(decoded)
+	for name := range fields {
+		if strings.EqualFold(name, "reasoning") {
+			m.reasoningPresent = true
+		}
+		if strings.EqualFold(name, "thinkingLevelMap") {
+			m.thinkingMapPresent = true
+		}
+	}
+	return nil
 }
 
 // readModelCatalog merges models.json (user-defined endpoints) with
 // models-store.json (bundled provider catalog) into a single list.
-// models.json wins on a provider/id collision. The result is sorted by
+// Explicit models.json capability fields win on a provider/id collision;
+// omitted capability fields retain the bundled definition. The result is sorted by
 // provider then ID so the /model card is stable across calls.
 func readModelCatalog() []piModel {
 	byKey := make(map[string]piModel)
@@ -721,16 +750,23 @@ func readModelCatalog() []piModel {
 				for provider, p := range cfg.Providers {
 					for _, m := range p.Models {
 						// A models.json entry with no name keeps the store's display name.
+						previous := byKey[provider+"/"+m.ID]
 						name := m.Name
 						if name == "" {
-							name = byKey[provider+"/"+m.ID].Name
+							name = previous.Name
 						}
 						cw := m.ContextWindow
 						if cw == 0 {
-							cw = byKey[provider+"/"+m.ID].ContextWindow
+							cw = previous.ContextWindow
 						}
 						m.Name = name
 						m.ContextWindow = cw
+						if !m.reasoningPresent {
+							m.Reasoning = previous.Reasoning
+						}
+						if !m.thinkingMapPresent {
+							m.ThinkingLevelMap = previous.ThinkingLevelMap
+						}
 						add(provider, m)
 					}
 				}

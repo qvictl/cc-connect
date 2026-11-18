@@ -33,6 +33,11 @@ func (e *Engine) showAsyncUserInput(state *interactiveState, p Platform, replyCt
 // Unlike a permission request, an async question neither stops the event reader
 // nor waits on RespondPermission. Its answer is new user input to the same thread.
 func (e *Engine) handleAsyncUserInput(p Platform, msg *Message, content, key string, sessions *SessionManager) (string, bool) {
+	// Permission callbacks belong to the prompt-bound permission path even
+	// when that prompt is gone. Never interpret an old card as a typed answer.
+	if msg.IsPermissionResponse {
+		return content, false
+	}
 	parts := strings.Split(content, ":")
 	callback := len(parts) == 4 && parts[0] == "askq"
 	e.interactiveMu.Lock()

@@ -192,8 +192,29 @@ func TestFetchSingleMessage_QuotedForwardDoesNotDownloadFiles(t *testing.T) {
 			t.Errorf("quoted text = %q, want %q", msg.text, want)
 		}
 	}
-	if len(msg.files) != 0 {
-		t.Fatalf("quoted forward delivered %d files, want none", len(msg.files))
+	// These are lazy candidates, not downloaded attachments. Preserve their
+	// resource identity so the dispatcher can apply mention/sender gates.
+	wantFiles := map[string]string{"fk_top": "top.txt", "fk_post": "top.csv", "fk_nested": "nested.txt", "fk_nested_post": "nested.csv"}
+	if len(msg.files) != len(wantFiles) {
+		t.Fatalf("quoted forward metadata = %d, want %d", len(msg.files), len(wantFiles))
+	}
+	for _, file := range msg.files {
+		want, ok := wantFiles[file.fileKey]
+		if !ok || file.fileName != want || file.messageID != "om_root" || file.senderID != "" {
+			t.Errorf("unexpected quoted metadata: %+v", file)
+		}
+		delete(wantFiles, file.fileKey)
+	}
+	if len(wantFiles) != 0 {
+		t.Errorf("missing quoted metadata: %v", wantFiles)
+	}
+	// This fixture has no authenticated original sender. Even a mention must
+	// not turn its metadata into file-resource requests.
+	p.botOpenID = "ou_bot"
+	mentions := []*larkim.MentionEvent{{Id: &larkim.UserId{OpenId: strPtr("ou_bot")}}}
+	approved := p.filterQuotedFilesForUser(msg.files, mentions, "ou_requester")
+	if len(approved) != 0 || len(p.downloadQuotedFiles(context.Background(), approved)) != 0 {
+		t.Fatal("unknown original sender bypassed the quoted-file privacy gate")
 	}
 	if len(msg.images) != 1 || string(msg.images[0].Data) != string(imageData) {
 		t.Errorf("quoted image changed: %+v", msg.images)
@@ -261,7 +282,7 @@ func newMessageTypesPlatform(t *testing.T, parentID, parentType, parentContent s
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
-			writeJSON(t, w, map[string]any{"code": 0, "msg": "success", "expire": 7200, "tenant_access_token": "t-token"})
+			writeJSON(t, w, map[string]any{"code": 0, "msg": "success", "expire": 7200, "tenant_access_token": fixedTestTenantToken})
 		case parentID != "" && r.URL.Path == "/open-apis/im/v1/messages/"+parentID:
 			writeJSON(t, w, map[string]any{"code": 0, "msg": "success", "data": map[string]any{"items": []map[string]any{{
 				"msg_type": parentType,
@@ -279,10 +300,11 @@ func newMessageTypesPlatform(t *testing.T, parentID, parentType, parentContent s
 		platformName: "feishu",
 		domain:       srv.URL,
 		appID:        "cli_msg_types",
-		appSecret:    "secret-msg-types",
+		appSecret:    fixedTestAppSecret,
 		botOpenID:    "ou_bot",
 		dedup:        &core.MessageDedup{},
-		client:       lark.NewClient("cli_msg_types", "secret-msg-types", lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(srv.Client())),
+		client:       lark.NewClient("cli_msg_types", fixedTestAppSecret, lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(fixtureHTTPClient(t, srv.URL))),
+		replayClient: lark.NewClient("cli_msg_types", fixedTestAppSecret, lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(fixtureHTTPClient(t, srv.URL))),
 		handler:      handler,
 	}
 }

@@ -206,7 +206,7 @@ func (bs *BridgeServer) RegisterEngine(projectName string, engine *Engine, bp *B
 	if err := bp.Start(engine.handleMessage); err != nil {
 		slog.Warn("bridge: platform start failed", "project", projectName, "error", err)
 	}
-	bp.SetCardNavigationHandler(engine.handleCardNav)
+	bp.SetUserAwareCardNavigationHandler(engine.handleCardNavForUser)
 	bs.engines[projectName] = &bridgeEngineRef{engine: engine, platform: bp}
 }
 
@@ -219,7 +219,7 @@ func (bs *BridgeServer) Start() {
 	mux.HandleFunc("/bridge/sessions", bs.corsHTTP(bs.authHTTP(bs.handleSessions)))
 	mux.HandleFunc("/bridge/sessions/", bs.corsHTTP(bs.authHTTP(bs.handleSessionRoutes)))
 
-	addr := fmt.Sprintf(":%d", bs.port)
+	addr := bridgeListenAddress(bs.port)
 	bs.server = &http.Server{Addr: addr, Handler: mux}
 
 	go func() {
@@ -299,6 +299,8 @@ type BridgePlatform struct {
 	project    string
 	handler    MessageHandler
 	navHandler CardNavigationHandler
+	userAwareNavHandler UserAwareCardNavigationHandler
+	navMu sync.RWMutex
 }
 
 // Compile-time interface checks.
@@ -315,6 +317,7 @@ var (
 	_ ImageSender               = (*BridgePlatform)(nil)
 	_ FileSender                = (*BridgePlatform)(nil)
 	_ CardNavigable             = (*BridgePlatform)(nil)
+	_ UserAwareCardNavigable    = (*BridgePlatform)(nil)
 	_ ReplyContextReconstructor = (*BridgePlatform)(nil)
 )
 
@@ -683,7 +686,17 @@ func (bp *BridgePlatform) SendFile(ctx context.Context, replyCtx any, file FileA
 }
 
 func (bp *BridgePlatform) SetCardNavigationHandler(h CardNavigationHandler) {
+	bp.navMu.Lock()
+	defer bp.navMu.Unlock()
 	bp.navHandler = h
+	bp.userAwareNavHandler = nil
+}
+
+func (bp *BridgePlatform) SetUserAwareCardNavigationHandler(h UserAwareCardNavigationHandler) {
+	bp.navMu.Lock()
+	defer bp.navMu.Unlock()
+	bp.userAwareNavHandler = h
+	bp.navHandler = nil
 }
 
 // ---------------------------------------------------------------------------
@@ -987,11 +1000,16 @@ func (a *bridgeAdapter) handleCardAction(raw json.RawMessage) {
 	}
 
 	// nav: / act: — card navigation and in-place updates
-	if ref.platform.navHandler == nil {
-		return
+	ref.platform.navMu.RLock()
+	nav, userAwareNav := ref.platform.navHandler, ref.platform.userAwareNavHandler
+	ref.platform.navMu.RUnlock()
+	var card *Card
+	if h := userAwareNav; h != nil {
+		// Match the identity used by cmd: callbacks in dispatchAsMessage.
+		card = h(ca.Action, ca.SessionKey, "web-admin")
+	} else if h := nav; h != nil {
+		card = h(ca.Action, ca.SessionKey)
 	}
-
-	card := ref.platform.navHandler(ca.Action, ca.SessionKey)
 	if card == nil {
 		return
 	}

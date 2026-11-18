@@ -13,7 +13,7 @@ import (
 
 func TestReplyRefreshesTenantTokenAfterInvalidCachedToken(t *testing.T) {
 	const appID = "cli_reply_retry"
-	const appSecret = "secret-reply-retry"
+	const appSecret = fixedTestAppSecret
 
 	authCalls := 0
 	replyCalls := 0
@@ -23,9 +23,9 @@ func TestReplyRefreshesTenantTokenAfterInvalidCachedToken(t *testing.T) {
 		switch {
 		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
 			authCalls++
-			token := "stale-token"
+			token := "TEST_ONLY_FIXED_FEISHU_STALE_TOKEN"
 			if authCalls >= 2 {
-				token = "fresh-token"
+				token = "TEST_ONLY_FIXED_FEISHU_FRESH_TOKEN"
 			}
 			writeJSON(t, w, map[string]any{
 				"code":                0,
@@ -38,7 +38,7 @@ func TestReplyRefreshesTenantTokenAfterInvalidCachedToken(t *testing.T) {
 			authz := r.Header.Get("Authorization")
 			switch replyCalls {
 			case 1, 2:
-				if authz != "Bearer stale-token" {
+				if authz != "Bearer TEST_ONLY_FIXED_FEISHU_STALE_TOKEN" {
 					t.Fatalf("reply call %d Authorization = %q, want stale token", replyCalls, authz)
 				}
 				writeJSON(t, w, map[string]any{
@@ -46,7 +46,7 @@ func TestReplyRefreshesTenantTokenAfterInvalidCachedToken(t *testing.T) {
 					"msg":  "Invalid access token for authorization",
 				})
 			case 3:
-				if authz != "Bearer fresh-token" {
+				if authz != "Bearer TEST_ONLY_FIXED_FEISHU_FRESH_TOKEN" {
 					t.Fatalf("reply retry Authorization = %q, want fresh token", authz)
 				}
 				writeJSON(t, w, map[string]any{
@@ -70,12 +70,12 @@ func TestReplyRefreshesTenantTokenAfterInvalidCachedToken(t *testing.T) {
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		replayClient: lark.NewClient(appID, appSecret,
 			lark.WithEnableTokenCache(false),
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 	}
 
@@ -93,7 +93,7 @@ func TestReplyRefreshesTenantTokenAfterInvalidCachedToken(t *testing.T) {
 
 func TestSendNewMessageToChatRefreshesTenantTokenAfterInvalidCachedToken(t *testing.T) {
 	const appID = "cli_create_retry"
-	const appSecret = "secret-create-retry"
+	const appSecret = fixedTestAppSecret
 
 	authCalls := 0
 	createCalls := 0
@@ -103,9 +103,9 @@ func TestSendNewMessageToChatRefreshesTenantTokenAfterInvalidCachedToken(t *test
 		switch {
 		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
 			authCalls++
-			token := "stale-token"
+			token := "TEST_ONLY_FIXED_FEISHU_STALE_TOKEN"
 			if authCalls >= 2 {
-				token = "fresh-token"
+				token = "TEST_ONLY_FIXED_FEISHU_FRESH_TOKEN"
 			}
 			writeJSON(t, w, map[string]any{
 				"code":                0,
@@ -118,7 +118,7 @@ func TestSendNewMessageToChatRefreshesTenantTokenAfterInvalidCachedToken(t *test
 			authz := r.Header.Get("Authorization")
 			switch createCalls {
 			case 1, 2:
-				if authz != "Bearer stale-token" {
+				if authz != "Bearer TEST_ONLY_FIXED_FEISHU_STALE_TOKEN" {
 					t.Fatalf("create call %d Authorization = %q, want stale token", createCalls, authz)
 				}
 				writeJSON(t, w, map[string]any{
@@ -126,7 +126,7 @@ func TestSendNewMessageToChatRefreshesTenantTokenAfterInvalidCachedToken(t *test
 					"msg":  "Invalid access token for authorization",
 				})
 			case 3:
-				if authz != "Bearer fresh-token" {
+				if authz != "Bearer TEST_ONLY_FIXED_FEISHU_FRESH_TOKEN" {
 					t.Fatalf("create retry Authorization = %q, want fresh token", authz)
 				}
 				writeJSON(t, w, map[string]any{
@@ -150,12 +150,12 @@ func TestSendNewMessageToChatRefreshesTenantTokenAfterInvalidCachedToken(t *test
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		replayClient: lark.NewClient(appID, appSecret,
 			lark.WithEnableTokenCache(false),
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 	}
 
@@ -173,7 +173,7 @@ func TestSendNewMessageToChatRefreshesTenantTokenAfterInvalidCachedToken(t *test
 
 func TestReplyDoesNotRefreshTenantTokenOnNonTokenError(t *testing.T) {
 	const appID = "cli_non_token_error"
-	const appSecret = "secret-non-token-error"
+	const appSecret = fixedTestAppSecret
 
 	authCalls := 0
 	replyCalls := 0
@@ -187,7 +187,7 @@ func TestReplyDoesNotRefreshTenantTokenOnNonTokenError(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "normal-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case strings.HasSuffix(r.URL.Path, "/reply"):
 			replyCalls++
@@ -208,12 +208,12 @@ func TestReplyDoesNotRefreshTenantTokenOnNonTokenError(t *testing.T) {
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		replayClient: lark.NewClient(appID, appSecret,
 			lark.WithEnableTokenCache(false),
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 	}
 

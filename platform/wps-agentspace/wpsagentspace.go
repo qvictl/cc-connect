@@ -366,11 +366,7 @@ func (p *Platform) connect(ctx context.Context) error {
 
 	slog.Debug("wps-agentspace: dialing with headers", "cookie_length", len(p.wpsSid))
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-	}
-
-	conn, _, err := dialer.DialContext(ctx, wsURL, header)
+	conn, _, err := dialWebSocket(ctx, wsURL, header)
 	if err != nil {
 		return fmt.Errorf("wps-agentspace: dial: %w", err)
 	}

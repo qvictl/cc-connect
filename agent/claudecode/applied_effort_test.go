@@ -21,7 +21,7 @@ func settingsResponse(requestID, subtype string, applied map[string]any) map[str
 			"request_id": requestID,
 			"response": map[string]any{
 				"effective": map[string]any{
-					"env": map[string]any{"ANTHROPIC_AUTH_TOKEN": "test-credential-must-not-leak"},
+					"env": map[string]any{"ANTHROPIC_AUTH_TOKEN": "TEST_ONLY_FIXED_CLAUDE_SETTINGS_CREDENTIAL"},
 				},
 				"applied": applied,
 			},
@@ -72,11 +72,11 @@ func TestControlResponse_DoesNotLogCredentials(t *testing.T) {
 
 	cs := &claudeSession{settingsRequestID: getSettingsRequestID}
 	line := `{"type":"control_response","response":{"subtype":"success","request_id":"` + getSettingsRequestID +
-		`","response":{"effective":{"env":{"ANTHROPIC_AUTH_TOKEN":"test-credential-must-not-leak"}},"applied":{"effort":"high"}}}}`
+		`","response":{"effective":{"env":{"ANTHROPIC_AUTH_TOKEN":"TEST_ONLY_FIXED_CLAUDE_SETTINGS_CREDENTIAL"}},"applied":{"effort":"high"}}}}`
 	cs.handleReadLoopLine(line)
 
-	if strings.Contains(buf.String(), "test-credential-must-not-leak") {
-		t.Fatalf("credential leaked into log output:\n%s", buf.String())
+	if strings.Contains(buf.String(), "TEST_ONLY_FIXED_CLAUDE_SETTINGS_CREDENTIAL") {
+		t.Fatal("credential reached debug log")
 	}
 	if got := cs.GetReasoningEffort(); got != "high" {
 		t.Fatalf("got %q, want %q", got, "high")
@@ -89,16 +89,17 @@ func TestControlResponse_ErrorDoesNotLogPayload(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	cs := &claudeSession{settingsRequestID: getSettingsRequestID}
-	cs.handleReadLoopLine(`{"type":"control_response","response":{"subtype":"error","request_id":"cc-connect-get-settings","error":"test-credential-must-not-leak"}}`)
-	if strings.Contains(buf.String(), "test-credential-must-not-leak") {
+	cs.handleReadLoopLine(`{"type":"control_response","response":{"subtype":"error","request_id":"cc-connect-get-settings","error":"TEST_ONLY_FIXED_CLAUDE_SETTINGS_CREDENTIAL"}}`)
+	if strings.Contains(buf.String(), "TEST_ONLY_FIXED_CLAUDE_SETTINGS_CREDENTIAL") {
 		t.Fatal("error payload reached debug log")
 	}
 }
 
 func TestControlResponse_UnexpectedShapeDoesNotLogPayload(t *testing.T) {
 	for _, line := range []string{
-		`{"type":"settings_response","response":{"request_id":"cc-connect-get-settings","effective":{"env":{"TOKEN":"test-credential-must-not-leak"}}}}`,
-		`{"type":"control_response","response":{"effective":{"env":{"TOKEN":"test-credential-must-not-leak"`,
+		`{"type":"TEST_ONLY_FIXED_CLAUDE_SETTINGS_CREDENTIAL","response":{"effective":{"env":{"TOKEN":"TEST_ONLY_FIXED_CLAUDE_SETTINGS_CREDENTIAL"}}}}`,
+		`{"type":"settings_response","response":{"request_id":"cc-connect-get-settings","effective":{"env":{"TOKEN":"TEST_ONLY_FIXED_CLAUDE_SETTINGS_CREDENTIAL"}}}}`,
+		`{"type":"control_response","response":{"effective":{"env":{"TOKEN":"TEST_ONLY_FIXED_CLAUDE_SETTINGS_CREDENTIAL"`,
 	} {
 		var buf bytes.Buffer
 		prev := slog.Default()
@@ -106,7 +107,7 @@ func TestControlResponse_UnexpectedShapeDoesNotLogPayload(t *testing.T) {
 		cs := &claudeSession{settingsRequestID: getSettingsRequestID}
 		cs.handleReadLoopLine(line)
 		slog.SetDefault(prev)
-		if strings.Contains(buf.String(), "test-credential-must-not-leak") {
+		if strings.Contains(buf.String(), "TEST_ONLY_FIXED_CLAUDE_SETTINGS_CREDENTIAL") {
 			t.Error("unexpected settings response reached debug log")
 		}
 	}
@@ -150,6 +151,17 @@ func TestAppliedEffort_ConcurrentRefreshAndRead(t *testing.T) {
 // Test the actual spawn/stdin/read-loop contract for both fresh and resumed
 // sessions, including wrappers that bundle the CLI arguments into one flag.
 func TestAppliedEffort_UnsupportedCLIStillAnswers(t *testing.T) {
+	// The child is this test binary, not a real CLI. Do not pass provider
+	// credentials, proxy configuration or access to the real config HOME.
+	// This test is deliberately non-parallel because t.Setenv is process-wide.
+	home := t.TempDir()
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		t.Setenv(key, "")
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	for _, mode := range []string{"success", "error", "ignore", "malformed", "renamed"} {
 		for _, resume := range []string{"", "test-resume-id"} {
 			t.Run(mode+"/"+resume, func(t *testing.T) {

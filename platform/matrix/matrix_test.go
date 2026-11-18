@@ -2,6 +2,8 @@ package matrix
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -388,18 +390,62 @@ func TestPlatform_StopWithoutStart(t *testing.T) {
 	}
 }
 
+// testOnlyRejectingTransport records requests in memory and never delegates to
+// another transport or opens a network connection, even when Stop loses the race.
+type testOnlyRejectingTransport struct {
+	requests chan *http.Request
+}
+
+func (r *testOnlyRejectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	select {
+	case r.requests <- req:
+	default:
+	}
+	return nil, errors.New("TEST_ONLY_MATRIX: network disabled")
+}
+
 func TestPlatform_StartStopIdempotent(t *testing.T) {
-	p, _ := New(map[string]any{
-		"homeserver":   "https://matrix.org",
-		"access_token": "tok",
+	const homeserver = "https://test-only-matrix.invalid"
+	const accessToken = "TEST_ONLY_MATRIX_TOKEN"
+	p, err := New(map[string]any{
+		"homeserver":   homeserver,
+		"access_token": accessToken,
 	})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
 	plat := p.(*Platform)
+	transport := &testOnlyRejectingTransport{requests: make(chan *http.Request, 1)}
+	plat.httpClient = &http.Client{Transport: transport}
+	defer func() { _ = plat.Stop() }()
 
-	_ = plat.Start(func(_ core.Platform, _ *core.Message) {})
-	_ = plat.Stop()
-	_ = plat.Stop()
+	if err := plat.Start(func(_ core.Platform, _ *core.Message) {}); err != nil {
+		t.Fatalf("Start() returned error: %v", err)
+	}
+	// Force the asynchronous Whoami path to reach the rejecting transport before
+	// stopping. No DNS lookup, socket, proxy, or default transport is involved.
+	select {
+	case req := <-transport.requests:
+		if req.Method != http.MethodGet || req.URL.Scheme != "https" || req.URL.Host != "test-only-matrix.invalid" || !strings.HasSuffix(req.URL.Path, "/account/whoami") {
+			t.Errorf("unexpected intercepted request: %s %s", req.Method, req.URL)
+		}
+		if req.Header.Get("Authorization") != "Bearer "+accessToken {
+			t.Error("intercepted request did not use the fixed test-only token")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Whoami did not reach the in-memory rejecting transport")
+	}
+	if plat.httpClient.Transport != transport {
+		t.Fatal("HTTP client no longer uses the network-blocking test transport")
+	}
+	if err := plat.Stop(); err != nil {
+		t.Errorf("Stop() returned error: %v", err)
+	}
+	if err := plat.Stop(); err != nil {
+		t.Errorf("second Stop() returned error: %v", err)
+	}
 
-	err := plat.Start(func(_ core.Platform, _ *core.Message) {})
+	err = plat.Start(func(_ core.Platform, _ *core.Message) {})
 	if err == nil || !strings.Contains(err.Error(), "stopped") {
 		t.Errorf("expected stopped error, got %v", err)
 	}

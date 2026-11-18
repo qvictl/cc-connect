@@ -25,6 +25,7 @@ type elicitationOption struct {
 // keyed by.
 type elicitationQuestion struct {
 	PropertyKey string
+	Required    bool
 	Question    core.UserQuestion
 	Options     []elicitationOption
 }
@@ -62,8 +63,8 @@ type elicitationProperty struct {
 // order); without it, keys are sorted for determinism.
 //
 // Properties that carry no enum options (free-text string/number/boolean
-// fields) are skipped: cc-connect's ask-question wizard only renders
-// option lists.
+// fields) are skipped only when optional. Required unsupported fields fail
+// closed: the option-list wizard cannot produce a complete answer for them.
 func parseElicitationCreateParams(params json.RawMessage) (*elicitationState, error) {
 	var p struct {
 		Mode    string `json:"mode"`
@@ -83,22 +84,49 @@ func parseElicitationCreateParams(params json.RawMessage) (*elicitationState, er
 		return nil, fmt.Errorf("acp: elicitation/create with empty requestedSchema.properties")
 	}
 
+	required := make(map[string]bool, len(p.Schema.Required))
+	for _, key := range p.Schema.Required {
+		if _, ok := p.Schema.Properties[key]; !ok {
+			return nil, fmt.Errorf("acp: required elicitation property is missing")
+		}
+		required[key] = true
+	}
 	order := elicitationPropertyOrder(p.Schema.Properties, p.Schema.Required)
 	st := &elicitationState{}
 	for _, key := range order {
 		prop := p.Schema.Properties[key]
 		q, ok := elicitationPropertyToQuestion(prop)
 		if !ok {
+			if required[key] {
+				return nil, fmt.Errorf("acp: required elicitation property cannot be represented")
+			}
 			continue
 		}
 		st.Questions = append(st.Questions, elicitationQuestion{
 			PropertyKey: key,
+			Required:    required[key],
 			Question:    q,
 			Options:     elicitationEnumOptions(prop),
 		})
 	}
 	if len(st.Questions) == 0 {
 		return nil, fmt.Errorf("acp: elicitation/create schema has no enumerable option fields")
+	}
+	// Core keys answers by question text rather than schema property. If any
+	// titles collide, number every title so generated and original titles
+	// cannot collide with each other.
+	seen := make(map[string]bool, len(st.Questions))
+	duplicate := false
+	for _, q := range st.Questions {
+		duplicate = duplicate || seen[q.Question.Question]
+		seen[q.Question.Question] = true
+	}
+	for i := range st.Questions {
+		q := &st.Questions[i]
+		if duplicate {
+			q.Question.Question = fmt.Sprintf("[%d] %s", i+1, q.Question.Question)
+		}
+		makeElicitationLabelsRoundTrip(q)
 	}
 	return st, nil
 }
@@ -171,67 +199,90 @@ func elicitationEnumOptions(prop elicitationProperty) []elicitationOption {
 	return opts
 }
 
-// buildElicitationResponse translates an engine PermissionResult into an
-// ACP CreateElicitationResponse. The engine reports answers as
-// UpdatedInput["answers"], a map keyed by question text with string values
-// (multi-select labels joined with ", " in declared order). Here they are
-// re-keyed to the form's property keys and re-split into arrays for
-// multi-select questions, with each label mapped back to its enum const.
-//
-// Anything other than an allow with at least one matched answer resolves
-// to {"action":"decline"}, which kimi acp maps to the tool's canonical
-// "user dismissed" branch (decline and cancel are equivalent there).
+// Core joins multi-select labels with ", " and trims answers. Use neutral
+// ordinal labels only when the original labels are ambiguous in that wire
+// format. Keep the full original choice text in the visible description.
+func makeElicitationLabelsRoundTrip(q *elicitationQuestion) {
+	seen := make(map[string]bool, len(q.Options))
+	ambiguous := false
+	for _, opt := range q.Options {
+		ambiguous = ambiguous || opt.Label == "" || strings.TrimSpace(opt.Label) != opt.Label ||
+			seen[opt.Label] || (q.Question.MultiSelect && strings.Contains(opt.Label, ", "))
+		seen[opt.Label] = true
+	}
+	if !ambiguous {
+		return
+	}
+	for i := range q.Options {
+		opt := &q.Options[i]
+		description := opt.Label
+		if opt.Description != "" {
+			description += ": " + opt.Description
+		}
+		opt.Label = fmt.Sprintf("[%d]", i+1)
+		q.Question.Options[i].Label = opt.Label
+		q.Question.Options[i].Description = description
+	}
+}
+
+// buildElicitationResponse translates the wizard's text-keyed answers into
+// schema property keys and enum values. Required questions must all be answered;
+// unknown labels decline the whole form instead of silently accepting a subset.
 func buildElicitationResponse(st *elicitationState, result core.PermissionResult) map[string]any {
 	decline := map[string]any{"action": "decline"}
 	if !strings.EqualFold(result.Behavior, "allow") || st == nil {
 		return decline
 	}
-	answersRaw, ok := result.UpdatedInput["answers"]
-	if !ok {
-		return decline
-	}
-	answers, ok := answersRaw.(map[string]any)
+	answers, ok := result.UpdatedInput["answers"].(map[string]any)
 	if !ok || len(answers) == 0 {
 		return decline
 	}
-
 	content := make(map[string]any, len(st.Questions))
 	for _, q := range st.Questions {
-		ans, _ := answers[q.Question.Question].(string)
-		ans = strings.TrimSpace(ans)
-		if ans == "" {
+		raw, present := answers[q.Question.Question]
+		if !present {
+			if q.Required {
+				return decline
+			}
 			continue
 		}
+		ans, ok := raw.(string)
+		if !ok || strings.TrimSpace(ans) == "" {
+			return decline
+		}
+		ans = strings.TrimSpace(ans)
+		parts := []string{ans}
 		if q.Question.MultiSelect {
-			parts := strings.Split(ans, ", ")
-			picked := make([]string, 0, len(parts))
+			parts = strings.Split(ans, ", ")
+		}
+		selected := make(map[string]bool, len(parts))
+		for _, part := range parts {
+			matched := false
 			for _, opt := range q.Options {
-				for _, p := range parts {
-					if p == opt.Label {
-						picked = append(picked, opt.Value)
-						break
-					}
+				if part == opt.Label {
+					matched = true
+					break
 				}
 			}
-			if len(picked) > 0 {
-				content[q.PropertyKey] = picked
+			if !matched || selected[part] {
+				return decline
 			}
-			continue
+			selected[part] = true
 		}
-		value := ans
+		picked := make([]string, 0, len(parts))
 		for _, opt := range q.Options {
-			if ans == opt.Label {
-				value = opt.Value
-				break
+			if selected[opt.Label] {
+				picked = append(picked, opt.Value)
 			}
 		}
-		content[q.PropertyKey] = value
+		if q.Question.MultiSelect {
+			content[q.PropertyKey] = picked
+		} else {
+			content[q.PropertyKey] = picked[0]
+		}
 	}
 	if len(content) == 0 {
 		return decline
 	}
-	return map[string]any{
-		"action":  "accept",
-		"content": content,
-	}
+	return map[string]any{"action": "accept", "content": content}
 }

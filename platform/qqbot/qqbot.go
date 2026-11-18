@@ -379,10 +379,6 @@ func (p *Platform) apiRequestJSON(method, url string, body any, result any) erro
 
 var _ core.ImageSender = (*Platform)(nil)
 
-// buttonDataPrefix is the prefix for QQ Bot keyboard button_data values.
-// Format: perm:<decision>:<session_key>
-const buttonDataPrefix = "perm:"
-
 // SendFile uploads and sends a file via QQ Bot rich media API.
 // Implements core.FileSender.
 func (p *Platform) SendFile(ctx context.Context, replyCtx any, file core.FileAttachment) error {
@@ -442,19 +438,14 @@ func (p *Platform) SendWithButtons(ctx context.Context, replyCtx any, content st
 		for j, btn := range row {
 			// Encode decision + session key into button_data so we can route
 			// the INTERACTION_CREATE event back to the right session.
-			// btn.Data is already "perm:allow", "perm:deny", or "perm:allow_all"
+			// btn.Data is the bound perm:<prompt_id>:<decision> payload.
 			buttonData := btn.Data + ":" + sessionKey
 
 			btnID := fmt.Sprintf("b_%d_%d", i, j)
-			visitedLabel := "已操作"
-			style := 1 // blue
-			if strings.Contains(btn.Data, "deny") {
-				visitedLabel = "已拒绝"
-				style = 0 // grey
-			} else if strings.Contains(btn.Data, "allow_all") || strings.Contains(btn.Data, "allow all") {
-				visitedLabel = "已始终允许"
-			} else if strings.Contains(btn.Data, "allow") {
-				visitedLabel = "已允许"
+			visitedLabel := "已提交"
+			style := 1
+			if strings.HasSuffix(btn.Data, ":deny") {
+				style = 0
 			}
 
 			btns = append(btns, map[string]any{
@@ -1070,38 +1061,10 @@ func (p *Platform) handleInteractionCreate(data json.RawMessage) {
 	// ACK the interaction (required by QQ Bot API to prevent "请求超时" on buttons)
 	_ = p.ackInteraction(d.ID)
 
-	// Parse button_data: perm:<decision>:<session_key>
+	// Preserve the colonful session suffix while validating the bound payload.
 	buttonData := d.Data.Resolved.ButtonData
-	if !strings.HasPrefix(buttonData, buttonDataPrefix) {
-		slog.Debug("qqbot: unknown interaction button_data format", "data", buttonData)
-		return
-	}
-
-	rest := strings.TrimPrefix(buttonData, buttonDataPrefix)
-	// rest = "<decision>:<session_key>"
-	colonIdx := strings.Index(rest, ":")
-	if colonIdx < 0 {
-		slog.Warn("qqbot: invalid interaction button_data", "data", buttonData)
-		return
-	}
-	decision := rest[:colonIdx]
-	sessionKey := rest[colonIdx+1:]
-	if decision == "" || sessionKey == "" {
-		slog.Warn("qqbot: empty decision or session_key in button_data", "data", buttonData)
-		return
-	}
-
-	// Map decision to response text the engine understands
-	var responseText string
-	switch decision {
-	case "allow":
-		responseText = "allow"
-	case "deny":
-		responseText = "deny"
-	case "allow_all":
-		responseText = "allow all"
-	default:
-		slog.Warn("qqbot: unknown interaction decision", "decision", decision)
+	responseText, decision, sessionKey, ok := parsePermissionButtonData(buttonData)
+	if !ok {
 		return
 	}
 
@@ -1129,6 +1092,10 @@ func (p *Platform) handleInteractionCreate(data json.RawMessage) {
 		return
 	}
 
+	if !p.permissionActorMatchesSession(d.ChatType, d.GroupOpenID, userID, sessionKey) || p.handler == nil {
+		return
+	}
+
 	// Create synthetic message and forward to engine as a permission response
 	msg := &core.Message{
 		SessionKey:           sessionKey,
@@ -1143,6 +1110,44 @@ func (p *Platform) handleInteractionCreate(data json.RawMessage) {
 	slog.Debug("qqbot: forwarding button click as permission response",
 		"decision", decision, "session_key", sessionKey, "chat_type", d.ChatType)
 	p.handler(p, msg)
+}
+
+// parsePermissionButtonData keeps a colonful session key out of the prompt payload.
+func parsePermissionButtonData(data string) (payload, decision, sessionKey string, ok bool) {
+	parts := strings.SplitN(data, ":", 4)
+	if len(parts) != 4 || parts[3] == "" {
+		return "", "", "", false
+	}
+	payload = strings.Join(parts[:3], ":")
+	_, decision, ok = core.ParsePermissionCallback(payload)
+	if !ok {
+		return "", "", "", false
+	}
+	return payload, decision, parts[3], true
+}
+
+// Callback routing comes from the actual actor and chat, never from the suffix alone.
+func (p *Platform) permissionActorMatchesSession(chatType int, groupID, userID, sessionKey string) bool {
+	if userID == "" || !core.AllowList(p.allowFrom, userID) {
+		return false
+	}
+	var expected string
+	switch chatType {
+	case 1:
+		if groupID == "" {
+			return false
+		}
+		if p.shareSessionInChannel {
+			expected = "qqbot:g:" + groupID
+		} else {
+			expected = "qqbot:" + groupID + ":" + userID
+		}
+	case 2:
+		expected = "qqbot:" + userID
+	default:
+		return false
+	}
+	return sessionKey == expected
 }
 
 // ackInteraction acknowledges an INTERACTION_CREATE event.

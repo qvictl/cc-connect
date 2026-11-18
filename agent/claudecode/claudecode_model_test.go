@@ -15,6 +15,10 @@ import (
 // consulted, so precedence tests can assert the API was not reached at all.
 func modelsAPIStub(t *testing.T, hits *int32) *httptest.Server {
 	t.Helper()
+	// Never inherit a developer credential or endpoint if provider selection regresses.
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(hits, 1)
 		w.Header().Set("Content-Type", "application/json")
@@ -108,8 +112,9 @@ func TestAvailableModels_ConfiguredModelsWinWithoutAPICall(t *testing.T) {
 	srv := modelsAPIStub(t, &hits)
 
 	a := &Agent{
+		modelHTTPClient: modelFixtureHTTPClient(t, srv.URL),
 		providers: []core.ProviderConfig{{
-			APIKey:  "test-key",
+			APIKey:  "TEST_ONLY_FIXED_CLAUDE_MODEL_KEY",
 			BaseURL: srv.URL,
 			Models:  []core.ModelOption{{Name: "configured-model", Desc: "Configured"}},
 		}},
@@ -131,7 +136,8 @@ func TestAvailableModels_DynamicAPIBeatsFallback(t *testing.T) {
 	srv := modelsAPIStub(t, &hits)
 
 	a := &Agent{
-		providers: []core.ProviderConfig{{APIKey: "test-key", BaseURL: srv.URL}},
+		modelHTTPClient: modelFixtureHTTPClient(t, srv.URL),
+		providers: []core.ProviderConfig{{APIKey: "TEST_ONLY_FIXED_CLAUDE_MODEL_KEY", BaseURL: srv.URL}},
 		activeIdx: 0,
 	}
 

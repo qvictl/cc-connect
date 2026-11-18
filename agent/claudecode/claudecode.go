@@ -35,6 +35,7 @@ func init() {
 //   - "auto":              Claude's automatic permission classifier
 //   - "bypassPermissions": auto-approve everything (alias: yolo)
 type Agent struct {
+	modelHTTPClient *http.Client // optional model-discovery transport; nil uses http.DefaultClient
 	workDir             string
 	cmd                 string   // CLI binary name (default: "claude")
 	cliExtraArgs        []string // extra args parsed from cmd (e.g. ["code", "-t", "foo"])
@@ -460,7 +461,11 @@ func (a *Agent) fetchModelsFromAPI(ctx context.Context) []core.ModelOption {
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := http.DefaultClient.Do(req)
+	client := a.modelHTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		slog.Debug("claudecode: failed to fetch models", "error", err)
 		return nil

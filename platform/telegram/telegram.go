@@ -982,41 +982,10 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 		return
 	}
 
-	// Permission callbacks (perm:allow, perm:deny, perm:allow_all)
-	var responseText string
-	switch data {
-	case "perm:allow":
-		responseText = "allow"
-	case "perm:deny":
-		responseText = "deny"
-	case "perm:allow_all":
-		responseText = "allow all"
-	default:
-		slog.Debug("telegram: unknown callback data", "data", data)
+	// Keep the prompt binding intact; only the engine can confirm acceptance.
+	responseText, valid := permissionCallbackContent(data)
+	if !valid {
 		return
-	}
-
-	choiceLabel := responseText
-	switch data {
-	case "perm:allow":
-		choiceLabel = "✅ Allowed"
-	case "perm:deny":
-		choiceLabel = "❌ Denied"
-	case "perm:allow_all":
-		choiceLabel = "✅ Allow All"
-	}
-
-	origText := msg.Text
-	if origText == "" {
-		origText = "(permission request)"
-	}
-	if _, err := bot.EditMessageText(ctx, &tgbot.EditMessageTextParams{
-		ChatID:      chatID,
-		MessageID:   msgID,
-		Text:        origText + "\n\n" + choiceLabel,
-		ReplyMarkup: emptyMarkup,
-	}); err != nil {
-		slog.Debug("telegram: permission callback edit failed", "error", err)
 	}
 
 	p.handler(p, &core.Message{
@@ -1031,6 +1000,14 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 		ReplyCtx:             rctx,
 		IsPermissionResponse: true,
 	})
+}
+
+// permissionCallbackContent validates the wire payload without dropping its prompt ID.
+func permissionCallbackContent(data string) (string, bool) {
+	if _, _, ok := core.ParsePermissionCallback(data); !ok {
+		return "", false
+	}
+	return data, true
 }
 
 // isDirectedAtBot checks whether a group message is directed at this bot:
@@ -1133,7 +1110,19 @@ type editRichMessageParams struct {
 	ReplyMarkup *models.InlineKeyboardMarkup `json:"reply_markup,omitempty"`
 }
 
+// validateRichMessageResult rejects an incomplete successful response before it can
+// silently drop a message or produce an unusable preview handle.
+func validateRichMessageResult(msg *models.Message) (*models.Message, error) {
+	if msg == nil || msg.ID == 0 {
+		return nil, errors.New("telegram: rich message response missing message ID")
+	}
+	return msg, nil
+}
+
 func (p *Platform) sendRichMessage(ctx context.Context, chatID any, threadID int, replyMsgID int, content string, markup *models.InlineKeyboardMarkup) (*models.Message, error) {
+	if _, err := p.connectedBot("rich message"); err != nil {
+		return nil, errors.New("telegram: rich message request failed")
+	}
 	cleanMd := core.StripANSI(content)
 	cleanMd = core.FormatSmartTelegramRichMarkdown(cleanMd)
 	isRTL := core.IsRTL(cleanMd)
@@ -1156,13 +1145,13 @@ func (p *Platform) sendRichMessage(ctx context.Context, chatID any, threadID int
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("telegram: rich message request failed")
 	}
 
 	apiURL := "https://api.telegram.org/bot" + p.token + "/sendRichMessage"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(data))
 	if err != nil {
-		return nil, err
+		return nil, errors.New("telegram: rich message request failed")
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -1173,13 +1162,13 @@ func (p *Platform) sendRichMessage(ctx context.Context, chatID any, threadID int
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("telegram: rich message request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("telegram: rich message request failed")
 	}
 
 	var tgResp struct {
@@ -1189,17 +1178,20 @@ func (p *Platform) sendRichMessage(ctx context.Context, chatID any, threadID int
 		ErrorCode   int             `json:"error_code"`
 	}
 	if err := json.Unmarshal(bodyBytes, &tgResp); err != nil {
-		return nil, fmt.Errorf("decode sendRichMessage response: %w", err)
+		return nil, errors.New("telegram: invalid rich message response")
 	}
 
 	if !tgResp.OK {
-		return nil, fmt.Errorf("sendRichMessage (code %d): %s", tgResp.ErrorCode, tgResp.Description)
+		return nil, fmt.Errorf("telegram: rich message rejected (code %d)", tgResp.ErrorCode)
 	}
 
-	return tgResp.Result, nil
+	return validateRichMessageResult(tgResp.Result)
 }
 
 func (p *Platform) editRichMessage(ctx context.Context, chatID any, messageID int, content string, markup *models.InlineKeyboardMarkup) (*models.Message, error) {
+	if _, err := p.connectedBot("rich message"); err != nil {
+		return nil, errors.New("telegram: rich message request failed")
+	}
 	cleanMd := core.StripANSI(content)
 	cleanMd = core.FormatSmartTelegramRichMarkdown(cleanMd)
 	isRTL := core.IsRTL(cleanMd)
@@ -1216,13 +1208,13 @@ func (p *Platform) editRichMessage(ctx context.Context, chatID any, messageID in
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("telegram: rich message request failed")
 	}
 
 	apiURL := "https://api.telegram.org/bot" + p.token + "/editMessageText"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(data))
 	if err != nil {
-		return nil, err
+		return nil, errors.New("telegram: rich message request failed")
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -1233,13 +1225,13 @@ func (p *Platform) editRichMessage(ctx context.Context, chatID any, messageID in
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("telegram: rich message request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("telegram: rich message request failed")
 	}
 
 	var tgResp struct {
@@ -1249,17 +1241,17 @@ func (p *Platform) editRichMessage(ctx context.Context, chatID any, messageID in
 		ErrorCode   int             `json:"error_code"`
 	}
 	if err := json.Unmarshal(bodyBytes, &tgResp); err != nil {
-		return nil, fmt.Errorf("decode editMessageText response: %w", err)
+		return nil, errors.New("telegram: invalid rich message response")
 	}
 
 	if !tgResp.OK {
 		if strings.Contains(tgResp.Description, "not modified") {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("editMessageText (code %d): %s", tgResp.ErrorCode, tgResp.Description)
+		return nil, fmt.Errorf("telegram: rich message rejected (code %d)", tgResp.ErrorCode)
 	}
 
-	return tgResp.Result, nil
+	return validateRichMessageResult(tgResp.Result)
 }
 
 func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {

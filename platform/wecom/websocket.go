@@ -628,6 +628,9 @@ func (p *WSPlatform) handleEventCallback(frame wsFrame) {
 	}
 
 	if body.Event.EventType == "template_card_event" {
+		if strings.TrimSpace(body.From.UserID) == "" || p.handler == nil {
+			return
+		}
 		slog.Info("wecom-ws: template_card_event received", "user", body.From.UserID, "event_key", body.Event.EventKey, "task_id", body.Event.TaskID)
 		if !core.AllowList(p.allowFrom, body.From.UserID) {
 			slog.Warn("wecom-ws: event rejected by allow_from", "user", body.From.UserID)
@@ -642,6 +645,9 @@ func (p *WSPlatform) handleEventCallback(frame wsFrame) {
 		rctx := wsReplyContext{reqID: frame.Headers.ReqID, userID: body.From.UserID, chatID: chatID}
 
 		responseText, isPerm := parseWeComPermissionResponse(body.Event.EventKey)
+		if strings.HasPrefix(strings.TrimSpace(body.Event.EventKey), "perm:") && !isPerm {
+			return
+		}
 		go p.handler(p, &core.Message{
 			SessionKey:           sessionKey,
 			Platform:             "wecom",

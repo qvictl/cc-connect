@@ -1,7 +1,9 @@
 package wpsagentspace
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,19 +25,19 @@ func TestDecryptWpsSid(t *testing.T) {
 	}{
 		{
 			name:      "not encrypted",
-			encrypted: "plain-text-sid",
+			encrypted: rand.Text(),
 			appId:     "",
 			wantErr:   false,
 		},
 		{
 			name:      "invalid format",
-			encrypted: "a:b:c",
+			encrypted: strings.Join([]string{rand.Text(), rand.Text(), rand.Text()}, ":"),
 			appId:     "",
 			wantErr:   false,
 		},
 		{
 			name:      "invalid hex",
-			encrypted: "not-hex:iv:tag:data",
+			encrypted: "!" + strings.Join([]string{rand.Text(), rand.Text(), rand.Text(), rand.Text()}, ":"),
 			appId:     "",
 			wantErr:   true,
 		},
@@ -123,7 +125,8 @@ func TestGetWSURL(t *testing.T) {
 }
 
 func TestEncryptDecryptWpsSid(t *testing.T) {
-	originalSid := "test-wps-sid-example-value-for-testing"
+	// Generate fixture material locally; never print it or store it in source.
+	originalSid := rand.Text()
 	appId := "test-app-id-12345"
 
 	// Encrypt
@@ -131,9 +134,6 @@ func TestEncryptDecryptWpsSid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encryptWpsSid() error: %v", err)
 	}
-
-	t.Logf("Original: %s", originalSid)
-	t.Logf("Encrypted: %s", encrypted)
 
 	// Verify format (salt:iv:authTag:ciphertext)
 	parts := strings.Split(encrypted, ":")
@@ -148,16 +148,15 @@ func TestEncryptDecryptWpsSid(t *testing.T) {
 	}
 
 	if decrypted != originalSid {
-		t.Errorf("decryptWpsSid() = %q, want %q", decrypted, originalSid)
+		t.Error("decryptWpsSid() did not recover the original fixture")
 	}
 
-	t.Logf("Decrypted: %s", decrypted)
 	t.Log("Encrypt/Decrypt round-trip successful")
 }
 
 func TestDecryptWpsSid_FallbackToDefaultKeySource(t *testing.T) {
 	// Token encrypted when appID was empty (uses defaultKeySource).
-	legacy := "legacy-token-no-appid"
+	legacy := rand.Text()
 	encrypted, err := encryptWpsSid(legacy, "")
 	if err != nil {
 		t.Fatalf("encryptWpsSid() error: %v", err)
@@ -170,12 +169,12 @@ func TestDecryptWpsSid_FallbackToDefaultKeySource(t *testing.T) {
 		t.Fatalf("decryptWpsSid() error: %v", err)
 	}
 	if got != legacy {
-		t.Errorf("decryptWpsSid() = %q, want %q (fallback did not fire)", got, legacy)
+		t.Error("decryptWpsSid() did not recover the fixture using the fallback")
 	}
 }
 
 func TestStart_DecryptsEncryptedToken(t *testing.T) {
-	raw := "test-wps-sid-for-start"
+	raw := rand.Text()
 	appID := "test-app-id-start"
 	encrypted, err := encryptWpsSid(raw, appID)
 	if err != nil {
@@ -194,7 +193,7 @@ func TestStart_DecryptsEncryptedToken(t *testing.T) {
 	defer func() { _ = p.Stop() }()
 
 	if p.wpsSid != raw {
-		t.Errorf("Start() did not decrypt wps_sid: got %q, want %q", p.wpsSid, raw)
+		t.Error("Start() did not decrypt wps_sid to the original fixture")
 	}
 }
 
@@ -360,7 +359,8 @@ app_id = "AK123"
 	config.ConfigPath = configPath
 	t.Cleanup(func() { config.ConfigPath = prevConfigPath })
 
-	if !saveToConfig("AK123", "encrypted-token-value") {
+	encryptedFixture := rand.Text()
+	if !saveToConfig("AK123", encryptedFixture) {
 		t.Fatal("saveToConfig returned false")
 	}
 
@@ -370,28 +370,29 @@ app_id = "AK123"
 	}
 	updatedStr := string(updated)
 
-	if !strings.Contains(updatedStr, `wps_sid = "encrypted-token-value"`) {
-		t.Errorf("config missing updated wps_sid:\n%s", updatedStr)
+	if !strings.Contains(updatedStr, fmt.Sprintf(`wps_sid = %q`, encryptedFixture)) {
+		t.Error("config missing updated wps_sid")
 	}
 	if !strings.Contains(updatedStr, "# auto-saved") {
-		t.Errorf("config missing auto-saved marker:\n%s", updatedStr)
+		t.Error("config missing auto-saved marker")
 	}
 	// Preserve other fields/comments.
 	if !strings.Contains(updatedStr, `language = "zh"`) {
-		t.Errorf("language setting was lost:\n%s", updatedStr)
+		t.Error("language setting was lost")
 	}
 }
 
 func TestAutoLogin_Success(t *testing.T) {
 	appID := "AK-auto-login"
-	expectedToken := "raw-token-from-wps"
+	expectedToken := rand.Text()
+	loginCode := rand.Text()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/login_url":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"data": map[string]string{
-					"code":   "code-123",
+					"code":   loginCode,
 					"url":    "http://example.com/login",
 					"app_id": appID,
 				},
@@ -429,7 +430,7 @@ func TestAutoLogin_Success(t *testing.T) {
 		t.Fatalf("autoLogin() error: %v", err)
 	}
 	if raw != expectedToken {
-		t.Errorf("autoLogin() raw = %q, want %q", raw, expectedToken)
+		t.Error("autoLogin() did not return the expected fixture")
 	}
 	if encrypted == "" {
 		t.Error("autoLogin() returned empty encrypted token")

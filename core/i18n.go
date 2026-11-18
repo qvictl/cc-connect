@@ -201,6 +201,7 @@ const (
 	MsgToolResultFmtNoOutput     MsgKey = "tool_result_fmt_no_output"
 	MsgToolResultFmtOk           MsgKey = "tool_result_fmt_ok"
 	MsgToolResultFmtFailed       MsgKey = "tool_result_fmt_failed"
+	MsgToolPreviewTruncated      MsgKey = "tool_preview_truncated"
 	MsgExecutionStopped          MsgKey = "execution_stopped"
 	MsgSessionCloseFailed        MsgKey = "session_close_failed"
 	MsgSessionResumeUnsafe       MsgKey = "session_resume_unsafe"
@@ -209,6 +210,7 @@ const (
 	MsgPreviousProcessing        MsgKey = "previous_processing"
 	MsgQueueFull                 MsgKey = "queue_full"
 	MsgMessageQueued             MsgKey = "message_queued"
+	MsgMessageInjected           MsgKey = "message_injected"
 	MsgNoToolsAllowed            MsgKey = "no_tools_allowed"
 	MsgCurrentTools              MsgKey = "current_tools"
 	MsgCurrentSession            MsgKey = "current_session"
@@ -226,9 +228,13 @@ const (
 	MsgPermissionApproveAll      MsgKey = "permission_approve_all"
 	MsgPermissionDenied          MsgKey = "permission_denied_msg"
 	MsgPermissionHint            MsgKey = "permission_hint"
+	MsgPermissionStale           MsgKey = "permission_stale"
+	MsgUnsupportedQuestion       MsgKey = "unsupported_question"
+	MsgPermissionSubmitting      MsgKey = "permission_submitting"
 	MsgQuietOn                   MsgKey = "quiet_on"
 	MsgQuietOff                  MsgKey = "quiet_off"
 	MsgDisplayModeCompact        MsgKey = "display_mode_compact"
+	MsgDisplayModeFinalFixed     MsgKey = "display_mode_final_fixed"
 	MsgQuietGlobalOn             MsgKey = "quiet_global_on"
 	MsgQuietGlobalOff            MsgKey = "quiet_global_off"
 	MsgModeChanged               MsgKey = "mode_changed"
@@ -372,6 +378,7 @@ const (
 	MsgStatusSessionKey       MsgKey = "status_session_key"
 	MsgStatusAgentSID         MsgKey = "status_agent_sid"
 	MsgStatusUserID           MsgKey = "status_user_id"
+	MsgStatusAPIUnavailable   MsgKey = "status_api_unavailable"
 	MsgEnabledShort           MsgKey = "enabled_short"
 	MsgDisabledShort          MsgKey = "disabled_short"
 
@@ -463,6 +470,8 @@ const (
 	MsgAskQuestionAnswered  MsgKey = "ask_question_answered"
 	MsgAskQuestionStale     MsgKey = "ask_question_stale"
 
+	MsgAskQuestionAnswerFirst MsgKey = "ask_question_answer_first"
+
 	MsgCommandsTitle        MsgKey = "commands_title"
 	MsgCommandsEmpty        MsgKey = "commands_empty"
 	MsgCommandsHint         MsgKey = "commands_hint"
@@ -528,6 +537,7 @@ const (
 	MsgDeleteUsage              MsgKey = "delete_usage"
 	MsgDeleteSuccess            MsgKey = "delete_success"
 	MsgDeleteActiveDenied       MsgKey = "delete_active_denied"
+	MsgDeleteInUseDenied        MsgKey = "delete_in_use_denied"
 	MsgDeleteNotSupported       MsgKey = "delete_not_supported"
 	MsgDeleteModeTitle          MsgKey = "delete_mode_title"
 	MsgDeleteModeSelect         MsgKey = "delete_mode_select"
@@ -553,9 +563,17 @@ const (
 	MsgBannedWordBlocked MsgKey = "banned_word_blocked"
 	MsgCommandDisabled   MsgKey = "command_disabled"
 	MsgAdminRequired     MsgKey = "admin_required"
+	MsgCardActorRequired MsgKey = "card_actor_required"
 	MsgRateLimited       MsgKey = "rate_limited"
 	MsgPsSent            MsgKey = "ps_sent"
 	MsgPsSendFailed      MsgKey = "ps_send_failed"
+	MsgGoalUsage         MsgKey = "goal_usage"
+	MsgGoalUnsupported   MsgKey = "goal_unsupported"
+	MsgGoalError         MsgKey = "goal_error"
+	MsgGoalCleared       MsgKey = "goal_cleared"
+	MsgGoalNone          MsgKey = "goal_none"
+	MsgGoalUnlimited     MsgKey = "goal_unlimited"
+	MsgGoalStatus        MsgKey = "goal_status"
 	MsgPsEmpty           MsgKey = "ps_empty"
 	MsgPsNoSession       MsgKey = "ps_no_session"
 
@@ -606,6 +624,7 @@ const (
 	MsgBuiltinCmdMode      MsgKey = "mode"
 	MsgBuiltinCmdLang      MsgKey = "lang"
 	MsgBuiltinCmdQuiet     MsgKey = "quiet"
+	MsgBuiltinCmdGoal      MsgKey = "goal"
 	MsgBuiltinCmdCompress  MsgKey = "compress"
 	MsgBuiltinCmdStop      MsgKey = "stop"
 	MsgBuiltinCmdCron      MsgKey = "cron"
@@ -734,6 +753,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "ステータス",
 		LangSpanish:            "Estado",
 	},
+	MsgToolPreviewTruncated: {
+		LangEnglish:            "Middle omitted; beginning and end retained.",
+		LangChinese:            "已省略中间内容，保留开头与结尾。",
+		LangTraditionalChinese: "已省略中間內容，保留開頭與結尾。",
+		LangJapanese:           "途中を省略し、先頭と末尾を表示しています。",
+		LangSpanish:            "Parte central omitida; se conservan el principio y el final.",
+	},
 	MsgToolResultFmtExit: {
 		LangEnglish:            "Exit",
 		LangChinese:            "退出码",
@@ -810,6 +836,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "📬 訊息已收到，將在目前任務完成後處理。",
 		LangJapanese:           "📬 メッセージを受信しました。現在のタスク完了後に処理します。",
 		LangSpanish:            "📬 Mensaje recibido — se procesará después de que termine la tarea actual.",
+	},
+	MsgMessageInjected: {
+		LangEnglish:            "📎 Added to the current task.",
+		LangChinese:            "📎 已补充到当前任务。",
+		LangTraditionalChinese: "📎 已補充到目前任務。",
+		LangJapanese:           "📎 現在のタスクに追加しました。",
+		LangSpanish:            "📎 Añadido a la tarea en curso.",
 	},
 	MsgQueueFull: {
 		LangEnglish:            "📬 Message queue is full (%d pending). Please wait for current tasks to complete.",
@@ -937,6 +970,27 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "❌ 拒否しました。エージェントはこのツールの使用を中止します。",
 		LangSpanish:            "❌ Denegado. El agente detendrá el uso de esta herramienta.",
 	},
+	MsgUnsupportedQuestion: {
+		LangEnglish:            "⚠️ This agent's question cannot be answered through this chat. Answer in the agent's own interface, or stop and retry the task there. No answer or approval was submitted.\n\n%s",
+		LangChinese:            "⚠️ 无法通过此聊天回答这个 Agent 的问题。请在 Agent 自己的界面回答，或停止任务后在那里重试。没有提交答案或批准。\n\n%s",
+		LangTraditionalChinese: "⚠️ 無法透過此聊天回答這個 Agent 的問題。請在 Agent 自己的介面回答，或停止任務後在那裡重試。沒有提交答案或批准。\n\n%s",
+		LangJapanese:           "⚠️ このエージェントの質問には、このチャットから回答できません。エージェントの画面で回答するか、タスクを停止してそちらで再試行してください。回答や承認は送信されていません。\n\n%s",
+		LangSpanish:            "⚠️ No se puede responder a la pregunta de este agente desde este chat. Responde en la interfaz del agente, o detén la tarea y vuelve a intentarlo allí. No se envió ninguna respuesta ni aprobación.\n\n%s",
+	},
+	MsgPermissionStale: {
+		LangEnglish:            "⚠️ This request is no longer active.",
+		LangChinese:            "⚠️ 这个请求已失效。",
+		LangTraditionalChinese: "⚠️ 這個請求已失效。",
+		LangJapanese:           "⚠️ このリクエストは無効になっています。",
+		LangSpanish:            "⚠️ Esta solicitud ya no está activa.",
+	},
+	MsgPermissionSubmitting: {
+		LangEnglish:            "⏳ A response to this request is already being sent. Please wait for its result.",
+		LangChinese:            "⏳ 正在发送这个请求的回复，请等待结果。",
+		LangTraditionalChinese: "⏳ 正在傳送這個請求的回覆，請等待結果。",
+		LangJapanese:           "⏳ このリクエストへの回答を送信中です。結果をお待ちください。",
+		LangSpanish:            "⏳ Ya se está enviando una respuesta a esta solicitud. Espera el resultado.",
+	},
 	MsgPermissionHint: {
 		LangEnglish:            "⚠️ Waiting for permission response. Reply **allow** / **deny** / **allow all**.",
 		LangChinese:            "⚠️ 等待权限响应。请回复 **允许** / **拒绝** / **允许所有**。",
@@ -964,6 +1018,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "📋 緊湊模式 — 隱藏思考和工具訊息，每段文字獨立發送。",
 		LangJapanese:           "📋 コンパクトモード — 思考・ツール非表示、テキストは個別に送信。",
 		LangSpanish:            "📋 Modo compacto — pensamiento/herramientas ocultos, cada segmento de texto enviado por separado.",
+	},
+	MsgDisplayModeFinalFixed: {
+		LangEnglish:            "This project uses display mode \"final\" (only final answers are sent); it is set in the config file and /quiet does not change it.",
+		LangChinese:            "本项目使用 final 显示模式（只发送最终回答），由配置文件设定，/quiet 不会改变它。",
+		LangTraditionalChinese: "本專案使用 final 顯示模式（只發送最終回答），由設定檔設定，/quiet 不會改變它。",
+		LangJapanese:           "このプロジェクトは表示モード \"final\"（最終回答のみ送信）を使用しています。設定ファイルで指定されており、/quiet では変更できません。",
+		LangSpanish:            "Este proyecto usa el modo de visualización \"final\" (solo se envían respuestas finales); se define en el archivo de configuración y /quiet no lo cambia.",
 	},
 	MsgQuietGlobalOn: {
 		LangEnglish:            "🔇 Global quiet mode ON — all sessions will hide thinking and tool progress.",
@@ -1067,6 +1128,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/mode [name]\n  View/switch permission mode\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  View/switch language\n\n" +
 			"/compress\n  Compress conversation context\n\n" +
+			"/goal [set|edit|show|pause|resume|clear|budget]\n  Manage native goals\n\n" +
 			"/tts [always|voice_only]\n  View/switch text-to-speech mode\n\n" +
 			"/shell [--timeout <sec>] <command>\n  Run a shell command and return the output (! prefix shortcut: !cmd)\n\n" +
 			"/show <ref>\n  View a file, directory, or code snippet by reference\n\n" +
@@ -1111,6 +1173,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/mode [名称]\n  查看/切换权限模式\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  查看/切换语言\n\n" +
 			"/compress\n  压缩会话上下文\n\n" +
+			"/goal [set|edit|show|pause|resume|clear|budget]\n  管理原生 Goal\n\n" +
 			"/tts [always|voice_only]\n  查看/切换语音合成模式\n\n" +
 			"/shell [--timeout <秒>] <命令>\n  执行 Shell 命令并返回结果（快捷方式：!命令）\n\n" +
 			"/show <引用>\n  按引用查看文件、目录或代码片段\n\n" +
@@ -1155,6 +1218,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/mode [名稱]\n  查看/切換權限模式\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  查看/切換語言\n\n" +
 			"/compress\n  壓縮會話上下文\n\n" +
+			"/goal [set|edit|show|pause|resume|clear|budget]\n  管理原生 Goal\n\n" +
 			"/tts [always|voice_only]\n  查看/切換語音合成模式\n\n" +
 			"/shell [--timeout <秒>] <命令>\n  執行 Shell 命令並返回結果（快捷方式：!命令）\n\n" +
 			"/dir [路徑|reset]\n  查看、切換或重置 Agent 工作目錄\n\n" +
@@ -1197,6 +1261,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/mode [名前]\n  権限モードの表示/切り替え\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  言語の表示/切り替え\n\n" +
 			"/compress\n  会話コンテキストを圧縮\n\n" +
+			"/goal [set|edit|show|pause|resume|clear|budget]\n  ネイティブ Goal の管理\n\n" +
 			"/tts [always|voice_only]\n  音声合成モードの表示/切り替え\n\n" +
 			"/shell [--timeout <秒>] <コマンド>\n  シェルコマンドを実行して結果を返す（ショートカット：!コマンド）\n\n" +
 			"/dir [パス|reset]\n  エージェントの作業ディレクトリを表示/切り替え/リセット\n\n" +
@@ -1239,6 +1304,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/mode [nombre]\n  Ver/cambiar modo de permisos\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  Ver/cambiar idioma\n\n" +
 			"/compress\n  Comprimir contexto de conversación\n\n" +
+			"/goal [set|edit|show|pause|resume|clear|budget]\n  Gestionar objetivos nativos\n\n" +
 			"/tts [always|voice_only]\n  Ver/cambiar modo de síntesis de voz\n\n" +
 			"/shell [--timeout <seg>] <comando>\n  Ejecutar un comando shell y devolver la salida (atajo: !comando)\n\n" +
 			"/dir [ruta|reset]\n  Ver, cambiar o restablecer el directorio de trabajo del agente\n\n" +
@@ -1368,6 +1434,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/alias [add|del] — Command aliases\n" +
 			"/skills — List agent skills\n" +
 			"/compress — Compress context\n" +
+			"/goal [set|edit|show|pause|resume|clear|budget] — Manage native goals\n" +
 			"/stop — Stop current execution",
 		LangChinese: "**工具与自动化**\n" +
 			"/shell <命令> — 执行 Shell 命令（!快捷方式）\n" +
@@ -1379,6 +1446,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/alias [add|del] — 命令别名\n" +
 			"/skills — 列出 Agent Skills\n" +
 			"/compress — 压缩上下文\n" +
+			"/goal [set|edit|show|pause|resume|clear|budget] — 管理原生 Goal\n" +
 			"/stop — 停止当前执行",
 		LangTraditionalChinese: "**工具與自動化**\n" +
 			"/shell <命令> — 執行 Shell 命令（!快捷方式）\n" +
@@ -1390,6 +1458,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/alias [add|del] — 命令別名\n" +
 			"/skills — 列出 Agent Skills\n" +
 			"/compress — 壓縮上下文\n" +
+			"/goal [set|edit|show|pause|resume|clear|budget] — 管理原生 Goal\n" +
 			"/stop — 停止當前執行",
 		LangJapanese: "**ツール・自動化**\n" +
 			"/shell <コマンド> — シェルコマンド実行（!ショートカット）\n" +
@@ -1401,6 +1470,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/alias [add|del] — コマンドエイリアス\n" +
 			"/skills — エージェントスキル一覧\n" +
 			"/compress — コンテキスト圧縮\n" +
+			"/goal [set|edit|show|pause|resume|clear|budget] — ネイティブ Goal の管理\n" +
 			"/stop — 現在の実行を停止",
 		LangSpanish: "**Herramientas y automatización**\n" +
 			"/shell <comando> — Ejecutar comando shell (! atajo)\n" +
@@ -1412,6 +1482,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/alias [add|del] — Alias de comandos\n" +
 			"/skills — Listar skills del agente\n" +
 			"/compress — Comprimir contexto\n" +
+			"/goal [set|edit|show|pause|resume|clear|budget] — Gestionar objetivos nativos\n" +
 			"/stop — Detener ejecución actual",
 	},
 	MsgHelpSystemSection: {
@@ -1632,24 +1703,19 @@ var messages = map[MsgKey]map[Language]string{
 	MsgProviderAddUsage: {
 		LangEnglish: "Usage:\n\n" +
 			"`/provider add <name> <api_key> [base_url] [model]`\n\n" +
-			"Or JSON:\n" +
-			"`/provider add {\"name\":\"relay\",\"api_key\":\"sk-xxx\",\"base_url\":\"https://...\",\"model\":\"...\"}`",
+			"Or `/provider add` followed by a JSON object with `name` and `api_key`; `base_url` and `model` are optional.",
 		LangChinese: "用法:\n\n" +
 			"`/provider add <名称> <api_key> [base_url] [model]`\n\n" +
-			"或 JSON:\n" +
-			"`/provider add {\"name\":\"relay\",\"api_key\":\"sk-xxx\",\"base_url\":\"https://...\",\"model\":\"...\"}`",
+			"也可在 `/provider add` 后提供 JSON 对象，包含 `name` 和 `api_key`；`base_url` 和 `model` 为可选字段。",
 		LangTraditionalChinese: "用法:\n\n" +
 			"`/provider add <名稱> <api_key> [base_url] [model]`\n\n" +
-			"或 JSON:\n" +
-			"`/provider add {\"name\":\"relay\",\"api_key\":\"sk-xxx\",\"base_url\":\"https://...\",\"model\":\"...\"}`",
+			"也可在 `/provider add` 後提供 JSON 物件，包含 `name` 和 `api_key`；`base_url` 和 `model` 為選填欄位。",
 		LangJapanese: "使い方:\n\n" +
 			"`/provider add <名前> <api_key> [base_url] [model]`\n\n" +
-			"または JSON:\n" +
-			"`/provider add {\"name\":\"relay\",\"api_key\":\"sk-xxx\",\"base_url\":\"https://...\",\"model\":\"...\"}`",
+			"または `/provider add` の後に `name` と `api_key` を含む JSON オブジェクトを指定します。`base_url` と `model` は省略可能です。",
 		LangSpanish: "Uso:\n\n" +
 			"`/provider add <nombre> <api_key> [base_url] [model]`\n\n" +
-			"O JSON:\n" +
-			"`/provider add {\"name\":\"relay\",\"api_key\":\"sk-xxx\",\"base_url\":\"https://...\",\"model\":\"...\"}`",
+			"O escriba `/provider add` seguido de un objeto JSON con `name` y `api_key`; `base_url` y `model` son opcionales.",
 	},
 	MsgProviderAddFailed: {
 		LangEnglish:            "❌ Failed to add provider: %v",
@@ -1688,11 +1754,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese: "その他 (手動)", LangSpanish: "Otro (manual)",
 	},
 	MsgProviderAddApiKeyPrompt: {
-		LangEnglish:            "✅ Selected **%s**.\n\nPlease send your **API Key** for this provider.\nFormat: just the key, e.g. `sk-xxxxxxxx`",
-		LangChinese:            "✅ 已选择 **%s**。\n\n请发送你的 **API Key**。\n格式：直接发送密钥即可，如 `sk-xxxxxxxx`",
-		LangTraditionalChinese: "✅ 已選擇 **%s**。\n\n請傳送你的 **API Key**。\n格式：直接傳送金鑰即可，如 `sk-xxxxxxxx`",
-		LangJapanese:           "✅ **%s** を選択しました。\n\n**API キー** を送信してください。\n形式: キーをそのまま送信（例: `sk-xxxxxxxx`）",
-		LangSpanish:            "✅ Seleccionado **%s**.\n\nPor favor envía tu **API Key** para este proveedor.\nFormato: solo la clave, por ejemplo `sk-xxxxxxxx`",
+		LangEnglish:            "✅ Selected **%s**.\n\nPlease send your **API Key** for this provider.\nSend only the key.",
+		LangChinese:            "✅ 已选择 **%s**。\n\n请发送你的 **API Key**。\n格式：直接发送密钥即可。",
+		LangTraditionalChinese: "✅ 已選擇 **%s**。\n\n請傳送你的 **API Key**。\n格式：直接傳送金鑰即可。",
+		LangJapanese:           "✅ **%s** を選択しました。\n\n**API キー** を送信してください。\n形式: キーのみをそのまま送信してください。",
+		LangSpanish:            "✅ Seleccionado **%s**.\n\nPor favor envía tu **API Key** para este proveedor.\nEnvía solamente la clave.",
 	},
 	MsgProviderAddInviteHint: {
 		LangEnglish:            "🔑 Don't have a key? Register here: %s",
@@ -2535,6 +2601,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "ユーザーID: `%s`\n",
 		LangSpanish:            "ID de usuario: `%s`\n",
 	},
+	MsgStatusAPIUnavailable: {
+		LangEnglish:            "⚠️ Local API unavailable: %s\n`cc-connect send` and other local API commands are unavailable for this instance. Check the data directory and restart after resolving the conflict.",
+		LangChinese:            "⚠️ 本地 API 不可用：%s\n此实例无法使用 `cc-connect send` 和其他本地 API 命令。请检查数据目录，解决冲突后重启。",
+		LangTraditionalChinese: "⚠️ 本機 API 無法使用：%s\n此執行個體無法使用 `cc-connect send` 和其他本機 API 命令。請檢查資料目錄，解決衝突後重新啟動。",
+		LangJapanese:           "⚠️ ローカル API を利用できません: %s\nこのインスタンスでは `cc-connect send` などのローカル API コマンドを利用できません。データディレクトリを確認し、競合を解消してから再起動してください。",
+		LangSpanish:            "⚠️ API local no disponible: %s\n`cc-connect send` y otros comandos de la API local no están disponibles para esta instancia. Revisa el directorio de datos y reinicia tras resolver el conflicto.",
+	},
 	MsgEnabledShort: {
 		LangEnglish:            "ON",
 		LangChinese:            "开启",
@@ -2821,6 +2894,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "若按鈕無回應，請回覆選項編號（如 1）或直接輸入你的回答",
 		LangJapanese:           "ボタンが反応しない場合は、番号（例: 1）で返信するか、直接回答を入力してください",
 		LangSpanish:            "Si los botones no responden, responda con el número de opción (ej. 1) o escriba su respuesta",
+	},
+	MsgAskQuestionAnswerFirst: {
+		LangEnglish:            "⚠️ Please answer the question first. Your attachment was not sent to the agent; send it again after answering.",
+		LangChinese:            "⚠️ 请先回答上面的问题。这条附件没有发给 agent，回答后请重新发送。",
+		LangTraditionalChinese: "⚠️ 請先回答上面的問題。這則附件沒有發給 agent，回答後請重新發送。",
+		LangJapanese:           "⚠️ 先に質問に回答してください。添付ファイルはエージェントに送信されていません。回答後にもう一度送信してください。",
+		LangSpanish:            "⚠️ Responda primero a la pregunta. Su adjunto no se envió al agente; envíelo de nuevo después de responder.",
 	},
 	MsgAskQuestionNoteMulti: {
 		LangEnglish:            "Reply with comma-separated option numbers (e.g. 1,3) or type your answer",
@@ -3321,6 +3401,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "❌ 現在アクティブなセッションは削除できません。先に別のセッションに切り替えてください。",
 		LangSpanish:            "❌ No se puede eliminar la sesión activa. Cambie a otra sesión primero.",
 	},
+	MsgDeleteInUseDenied: {
+		LangEnglish:            "❌ Cannot delete %s: it is the active session of another chat. Switch that chat to another session first, then retry.",
+		LangChinese:            "❌ 不能删除 %s：它是其他对话正在使用的会话。请先在该对话中切换到其他会话，再重试。",
+		LangTraditionalChinese: "❌ 不能刪除 %s：它是其他對話正在使用的會話。請先在該對話中切換到其他會話，再重試。",
+		LangJapanese:           "❌ %s は削除できません：別のチャットで使用中のセッションです。そのチャットで別のセッションに切り替えてから、再試行してください。",
+		LangSpanish:            "❌ No se puede eliminar %s: es la sesión activa de otro chat. Cambie ese chat a otra sesión y vuelva a intentarlo.",
+	},
 	MsgDeleteNotSupported: {
 		LangEnglish:            "❌ This agent does not support session deletion.",
 		LangChinese:            "❌ 当前 Agent 不支持删除会话。",
@@ -3440,6 +3527,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "🚫 コマンド `%s` はこのプロジェクトで無効化されています。",
 		LangSpanish:            "🚫 El comando `%s` está deshabilitado para este proyecto.",
 	},
+	MsgCardActorRequired: {
+		LangEnglish:            "🔒 Cannot verify who clicked this card. Please use the text command instead.",
+		LangChinese:            "🔒 无法确认此卡片的点击者身份，请改用文本命令。",
+		LangTraditionalChinese: "🔒 無法確認此卡片的點擊者身分，請改用文字命令。",
+		LangJapanese:           "🔒 このカードをクリックしたユーザーを確認できません。テキストコマンドを使用してください。",
+		LangSpanish:            "🔒 No se puede verificar quién pulsó esta tarjeta. Usa el comando de texto.",
+	},
 	MsgAdminRequired: {
 		LangEnglish:            "🔒 Command `%s` requires admin privilege. Set `admin_from` in config to authorize users.",
 		LangChinese:            "🔒 命令 `%s` 需要管理员权限。请在配置中设置 `admin_from` 来授权用户。",
@@ -3467,6 +3561,55 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "❌ P.S. 傳送失敗。",
 		LangJapanese:           "❌ P.S. の送信に失敗しました。",
 		LangSpanish:            "❌ Error al entregar el P.S.",
+	},
+	MsgGoalUsage: {
+		LangEnglish:            "Usage: /goal [set <objective> [--budget N] | edit <objective> | show | pause | resume | clear | budget <N|none>] (objective: 1–4000 characters; budget: positive tokens).",
+		LangChinese:            "用法：/goal [set <目标> [--budget N] | edit <目标> | show | pause | resume | clear | budget <N|none>]（目标 1–4000 字；预算为正整数 token）。",
+		LangTraditionalChinese: "用法：/goal [set <目標> [--budget N] | edit <目標> | show | pause | resume | clear | budget <N|none>]（目標 1–4000 字；預算為正整數 token）。",
+		LangJapanese:           "使い方: /goal [set <目標> [--budget N] | edit <目標> | show | pause | resume | clear | budget <N|none>]（目標 1–4000 文字、予算は正のトークン数）。",
+		LangSpanish:            "Uso: /goal [set <objetivo> [--budget N] | edit <objetivo> | show | pause | resume | clear | budget <N|none>] (1–4000 caracteres; presupuesto positivo).",
+	},
+	MsgGoalUnsupported: {
+		LangEnglish:            "Native goals are unavailable on this agent backend. Use a compatible agent with backend = \"app_server\".",
+		LangChinese:            "当前 agent 后端不支持原生 Goal。请使用兼容的 agent 并配置 backend = \"app_server\"。",
+		LangTraditionalChinese: "目前 agent 後端不支援原生 Goal。請使用相容的 agent 並設定 backend = \"app_server\"。",
+		LangJapanese:           "このバックエンドはネイティブ Goal に対応していません。対応エージェントで backend = \"app_server\" を設定してください。",
+		LangSpanish:            "Este backend no admite objetivos nativos. Utiliza un agente compatible con backend = \"app_server\".",
+	},
+	MsgGoalError: {
+		LangEnglish:            "Goal operation failed: %v",
+		LangChinese:            "Goal 操作失败：%v",
+		LangTraditionalChinese: "Goal 操作失敗：%v",
+		LangJapanese:           "Goal 操作に失敗しました: %v",
+		LangSpanish:            "Error al gestionar el objetivo: %v",
+	},
+	MsgGoalCleared: {
+		LangEnglish:            "Goal cleared.",
+		LangChinese:            "Goal 已清除。",
+		LangTraditionalChinese: "Goal 已清除。",
+		LangJapanese:           "Goal を削除しました。",
+		LangSpanish:            "Objetivo eliminado.",
+	},
+	MsgGoalNone: {
+		LangEnglish:            "No Goal is set. Use /goal set <objective> [--budget N].",
+		LangChinese:            "当前没有 Goal。使用 /goal set <目标> [--budget N] 设置。",
+		LangTraditionalChinese: "目前沒有 Goal。使用 /goal set <目標> [--budget N] 設定。",
+		LangJapanese:           "Goal はありません。/goal set <目標> [--budget N] で設定できます。",
+		LangSpanish:            "No hay objetivo. Usa /goal set <objetivo> [--budget N].",
+	},
+	MsgGoalUnlimited: {
+		LangEnglish:            "unlimited",
+		LangChinese:            "不限",
+		LangTraditionalChinese: "不限",
+		LangJapanese:           "無制限",
+		LangSpanish:            "sin límite",
+	},
+	MsgGoalStatus: {
+		LangEnglish:            "Goal: %s\n%s\nTokens: %d / %s · Elapsed: %d s",
+		LangChinese:            "Goal：%s\n%s\nToken：%d / %s · 已用时：%d 秒",
+		LangTraditionalChinese: "Goal：%s\n%s\nToken：%d / %s · 已用時：%d 秒",
+		LangJapanese:           "Goal: %s\n%s\nトークン: %d / %s · 経過: %d 秒",
+		LangSpanish:            "Objetivo: %s\n%s\nTokens: %d / %s · Tiempo: %d s",
 	},
 	MsgPsEmpty: {
 		LangEnglish:            "Usage: `/ps <message>`",
@@ -3766,6 +3909,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "開關思考和工具進度訊息, 參數: [global]",
 		LangJapanese:           "思考/ツール進捗メッセージの表示切替, 引数: [global]",
 		LangSpanish:            "Alternar mensajes de progreso, arg: [global]",
+	},
+	MsgBuiltinCmdGoal: {
+		LangEnglish:            "Manage native goals: set/edit/show/pause/resume/clear/budget",
+		LangChinese:            "管理原生 Goal：设置/编辑/查看/暂停/恢复/清除/预算",
+		LangTraditionalChinese: "管理原生 Goal：設定/編輯/查看/暫停/恢復/清除/預算",
+		LangJapanese:           "ネイティブ Goal の設定・編集・表示・停止・再開・削除・予算",
+		LangSpanish:            "Gestionar objetivos nativos: crear/editar/ver/pausar/reanudar/eliminar/presupuesto",
 	},
 	MsgBuiltinCmdCompress: {
 		LangEnglish:            "Compress conversation context",

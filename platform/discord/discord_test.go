@@ -529,8 +529,8 @@ func TestSendWithButtons_UsesChannelComponents(t *testing.T) {
 			t.Fatalf("components = %#v, want one row", payload["components"])
 		}
 		row := components[0].(map[string]any)["components"].([]any)
-		if row[0].(map[string]any)["custom_id"] != "perm:allow" {
-			t.Fatalf("button = %#v, want perm:allow", row[0])
+		if row[0].(map[string]any)["custom_id"] != "perm:prompt-current:allow" {
+			t.Fatalf("button = %#v, want perm:prompt-current:allow", row[0])
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"id":"msg-1","channel_id":"ch-1"}`)
@@ -539,8 +539,8 @@ func TestSendWithButtons_UsesChannelComponents(t *testing.T) {
 
 	p := &Platform{session: newTestDiscordSession(t, server)}
 	err := p.SendWithButtons(context.Background(), replyContext{channelID: "ch-1"}, "approve tool?", [][]core.ButtonOption{{
-		{Text: "Allow", Data: "perm:allow"},
-		{Text: "Deny", Data: "perm:deny"},
+		{Text: "Allow", Data: "perm:prompt-current:allow"},
+		{Text: "Deny", Data: "perm:prompt-current:deny"},
 	}})
 	if err != nil {
 		t.Fatalf("SendWithButtons() error = %v", err)
@@ -567,7 +567,7 @@ func TestHandleComponentInteraction_DispatchesPermissionResponse(t *testing.T) {
 		Type:      discordgo.InteractionMessageComponent,
 		ChannelID: "channel-1",
 		Message:   &discordgo.Message{ID: "message-1", Content: "approve tool?"},
-		Data:      discordgo.MessageComponentInteractionData{CustomID: "perm:allow"},
+		Data:      discordgo.MessageComponentInteractionData{CustomID: "perm:prompt-current:allow"},
 	}}
 
 	p.handleComponentInteraction(p.session, interaction, "user-1", "user")
@@ -575,7 +575,7 @@ func TestHandleComponentInteraction_DispatchesPermissionResponse(t *testing.T) {
 	if got == nil {
 		t.Fatal("permission button did not dispatch a message")
 	}
-	if got.Content != "allow" || !got.IsPermissionResponse {
+	if got.Content != "perm:prompt-current:allow" || !got.IsPermissionResponse {
 		t.Fatalf("message = %#v, want allow permission response", got)
 	}
 	if got.SessionKey != "discord:channel-1:user-1" {
@@ -629,7 +629,7 @@ func TestHandleComponentInteraction_DispatchesAskQuestionOption(t *testing.T) {
 }
 
 func TestDiscordComponentCommandRejectsUnknownPermissionAction(t *testing.T) {
-	if command, isPermission, ok := discordComponentCommand("perm:allow_all"); !ok || !isPermission || command != "allow all" {
+	if command, isPermission, ok := discordComponentCommand("perm:prompt-current:allow_all"); !ok || !isPermission || command != "perm:prompt-current:allow_all" {
 		t.Fatalf("allow-all component = (%q, %v, %v), want (allow all, true, true)", command, isPermission, ok)
 	}
 	if _, _, ok := discordComponentCommand("perm:maybe"); ok {

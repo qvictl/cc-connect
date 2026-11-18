@@ -193,13 +193,14 @@ func TestFetchBotOpenIDWithRetry_TransientThenSucceeds(t *testing.T) {
 	// domain override; the underlying lark client uses p.domain.
 	plat, err := newPlatform("feishu", srv.URL, map[string]any{
 		"app_id":     "cli_test",
-		"app_secret": "secret_test",
+		"app_secret": fixedTestAppSecret,
 	})
 	if err != nil {
 		t.Fatalf("newPlatform() error = %v", err)
 	}
 	ip := plat.(*interactivePlatform)
 	p = ip.Platform
+	bindFixturePlatform(t, p, srv.URL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -227,12 +228,13 @@ func TestFetchBotOpenIDWithRetry_GivesUpAfterRetries(t *testing.T) {
 
 	plat, err := newPlatform("feishu", srv.URL, map[string]any{
 		"app_id":     "cli_test",
-		"app_secret": "secret_test",
+		"app_secret": fixedTestAppSecret,
 	})
 	if err != nil {
 		t.Fatalf("newPlatform() error = %v", err)
 	}
 	p := plat.(*interactivePlatform).Platform
+	bindFixturePlatform(t, p, srv.URL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -269,12 +271,13 @@ func TestStartGroupFilterSupervisor_RecoversOnNextAttempt(t *testing.T) {
 
 	plat, err := newPlatform("feishu", srv.URL, map[string]any{
 		"app_id":     "cli_test",
-		"app_secret": "secret_test",
+		"app_secret": fixedTestAppSecret,
 	})
 	if err != nil {
 		t.Fatalf("newPlatform() error = %v", err)
 	}
 	p := plat.(*interactivePlatform).Platform
+	bindFixturePlatform(t, p, srv.URL)
 
 	// Mark as degraded to mimic the post-startup failure state.
 	p.markGroupFilterDegraded(errors.New("simulated startup failure"))

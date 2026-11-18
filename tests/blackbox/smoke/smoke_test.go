@@ -1,20 +1,11 @@
 //go:build blackbox
 
-// Package smoke runs a small set of end-to-end checks on every backend and
-// capability profile:
+// Package smoke checks a test-instrumented cc-connect binary across platform
+// capability profiles. Credential-free cases use a private child environment.
+// Live agent turns require explicit -blackbox-live plus provider credentials.
+// Prebuilt release artifacts and credential-free in-process agents are rejected.
 //
-//	backend: inprocess (core.Engine in the test) | binary (real cc-connect
-//	         process driven through its bridge WebSocket)
-//	profile: text | buttons | streaming | card | full | legacy
-//
-// The command checks never start an agent turn, so they only need one agent
-// CLI on PATH and no model credentials. TestSmoke_AgentTurn needs credentials
-// and skips without them.
-//
-// Run:
-//
-//	go test -tags blackbox -count=1 ./tests/blackbox/smoke/
-//	CC_BLACKBOX_BINARY=dist/cc-connect-<ver>-linux-amd64 go test -tags blackbox ./tests/blackbox/smoke/
+// Run: go test -tags blackbox -count=1 ./tests/blackbox/smoke/
 package smoke
 
 import (
@@ -34,7 +25,7 @@ const (
 	idle        = 2 * time.Second
 )
 
-var backends = []helper.Backend{helper.BackendInProcess, helper.BackendBinary}
+var backends = []helper.Backend{helper.BackendBinary}
 
 // smokeAgent picks the agent for command smoke: CC_BLACKBOX_SMOKE_AGENT, the
 // first agent in CC_BLACKBOX_REQUIRE_AGENTS, or the first tier-one agent
@@ -89,7 +80,7 @@ func hasCapability(pr bbplatform.Profile, cap string) bool {
 }
 
 // TestSmoke_Commands: the process starts, accepts a message and answers the
-// core slash commands on every backend and profile.
+// core slash commands on the isolated binary backend and every profile.
 func TestSmoke_Commands(t *testing.T) {
 	forEachBackendAndProfile(t, bbplatform.Profiles, func(t *testing.T, env *helper.Env) {
 		help := helper.AnyText(command(t, env, "/help"))
@@ -186,7 +177,7 @@ func TestSmoke_BridgeRejectsBadToken(t *testing.T) {
 }
 
 // TestSmoke_AgentTurn: one real agent turn per profile. Needs model
-// credentials (see helper.requireCredentials) and skips without them.
+// explicit -blackbox-live and provider credentials; otherwise it skips.
 // Streaming profiles must leave a finished preview behind, not a stale one.
 func TestSmoke_AgentTurn(t *testing.T) {
 	agent := os.Getenv("CC_BLACKBOX_SMOKE_AGENT")

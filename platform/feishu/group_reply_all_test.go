@@ -12,7 +12,7 @@ import (
 func newGroupReplyAllTestPlatform(t *testing.T, name string, options map[string]any, handler core.MessageHandler) *Platform {
 	t.Helper()
 	opts := map[string]any{
-		"app_id": "cli_test", "app_secret": "secret_test",
+		"app_id": "cli_test", "app_secret": fixedTestAppSecret,
 		"allow_from": "*", "allow_chat": "*", "enable_feishu_card": false,
 	}
 	for key, value := range options {
@@ -91,7 +91,7 @@ func TestFeishuGroupReplyAllChats_PreservesDefaults(t *testing.T) {
 func TestFeishuGroupReplyAllChats_RejectsInvalidConfig(t *testing.T) {
 	for _, raw := range []any{true, 123, []any{"oc_allowed", 123}} {
 		_, err := newPlatform("feishu", lark.FeishuBaseUrl, map[string]any{
-			"app_id": "cli_test", "app_secret": "secret_test", "group_reply_all_chats": raw,
+			"app_id": "cli_test", "app_secret": fixedTestAppSecret, "group_reply_all_chats": raw,
 		})
 		if err == nil || !strings.Contains(err.Error(), "group_reply_all_chats") {
 			t.Errorf("raw %T: error = %v, want group_reply_all_chats configuration error", raw, err)

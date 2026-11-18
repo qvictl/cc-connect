@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -154,6 +155,8 @@ type appServerRequestUserInputAnswer struct {
 
 // appServerSession owns the stdio JSON-RPC transport and the active thread state.
 type appServerSession struct {
+	turnTokens        codexTurnTokens
+	sidechain         codexSidechainMeter
 	cliBin            string
 	cliExtraArgs      []string
 	url               string
@@ -197,18 +200,23 @@ type appServerSession struct {
 
 	stateMu      sync.Mutex
 	pendingMsgs  []string
+	subagents    codexSubagents
 	currentTurn  string
 	turnRevision uint64 // terminal notifications can precede the turn/start response
 	preambleSent bool
 
-	runtimeMu sync.RWMutex
-	usage     *core.UsageReport
-	context   *core.ContextUsage
+	goal         *core.Goal
+	goalRevision uint64
+	runtimeMu    sync.RWMutex
+	usage        *core.UsageReport
+	context      *core.ContextUsage
 }
 
 const (
 	appServerRequestTimeout      = 120 * time.Second
 	appServerUsageRefreshTimeout = 1500 * time.Millisecond
+	// Longer stderr lines are logged truncated; the rest is discarded.
+	appServerStderrLineLimit = 64 * 1024
 )
 
 // newAppServerSession connects to Codex and verifies the requested permissions before returning a usable session.
@@ -251,6 +259,14 @@ func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []stri
 		_ = s.Close()
 		return nil, err
 	}
+	if _, err := s.GetGoal(); err != nil {
+		slog.Debug("codex native goals unavailable", "error", err)
+	}
+	usageHome := s.codexHome
+	if usageHome == "" {
+		usageHome, _ = resolveCodexHome(s.extraEnv)
+	}
+	s.sidechain.begin(usageHome, s.CurrentSessionID(), resumeID != "" && resumeID != core.ContinueSession)
 	if err := s.refreshUsage(context.Background()); err != nil {
 		slog.Debug("codex app-server: initial rate limit fetch failed", "error", err)
 	}
@@ -300,7 +316,10 @@ func (s *appServerSession) connect() error {
 	if err != nil {
 		return fmt.Errorf("codex app-server resolve CLI: %w", err)
 	}
-	args = append(append([]string(nil), s.cliExtraArgs...), args...)
+	args, err = codexSubcommandArgs(s.cliExtraArgs, args)
+	if err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(s.ctx, bin, args...)
 	cmd.Dir = s.workDir
 	env := append([]string(nil), s.extraEnv...)
@@ -377,10 +396,14 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 	if resumeID != "" && resumeID != core.ContinueSession {
 		params := s.threadRequestParams()
 		params["threadId"] = resumeID
+		// cc-connect only needs the thread metadata; without this Codex
+		// hydrates every past turn into the response, which grows with the
+		// thread and can reach tens of MB on one JSON-RPC line.
+		params["excludeTurns"] = true
 
 		var resp threadResumeResponse
 		if err := s.request("thread/resume", params, &resp); err != nil {
-			return err
+			return fmt.Errorf("codex app-server thread/resume: %w", err)
 		}
 		if resp.Thread.ID == "" {
 			return fmt.Errorf("codex app-server resume returned empty thread id")
@@ -406,6 +429,9 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 	}
 	s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
 	s.threadID.Store(resp.Thread.ID)
+	s.stateMu.Lock()
+	s.turnTokens.newThread()
+	s.stateMu.Unlock()
 	slog.Info("codex app-server thread started", "thread_id", resp.Thread.ID)
 	return nil
 }
@@ -578,6 +604,9 @@ func (s *appServerSession) startTurn(threadID string, input []map[string]any, tu
 		params["approvalPolicy"] = approval
 	}
 
+	s.stateMu.Lock()
+	s.turnTokens.beginTurn()
+	s.stateMu.Unlock()
 	var resp turnStartResponse
 	if err := s.request("turn/start", params, &resp); err != nil {
 		return fmt.Errorf("codex app-server turn/start: %w", err)
@@ -612,16 +641,30 @@ func (s *appServerSession) steerTurn(threadID, expectedTurnID string, input []ma
 
 	var resp turnSteerResponse
 	if err := s.request("turn/steer", params, &resp); err != nil {
+		steerErr := fmt.Errorf("codex app-server turn/steer: %w", err)
+		var start, end *codexTokenUsage
 		s.stateMu.Lock()
-		if s.currentTurn == expectedTurnID {
+		retired := s.currentTurn != "" && s.currentTurn == expectedTurnID
+		if retired {
 			// A turn can finish before its delayed turn/start response is
 			// installed. Do not strand every later message on a stale ID;
 			// the next user message gets a normal turn/start instead.
 			s.currentTurn = ""
 			s.turnRevision++
+			// Retire the meter under the same lock as the turn identity.
+			// Otherwise the next start replaces its unreported baseline.
+			start, end = s.turnTokens.finishTurn()
+			// Retain any already-buffered answer until the next turn starts.
+			// A failed steer retires accounting, not existing response text.
 		}
 		s.stateMu.Unlock()
-		return fmt.Errorf("codex app-server turn/steer: %w", err)
+		if retired {
+			event := core.Event{Type: core.EventError, Error: steerErr}
+			applyCodexTurnUsage(&event, start, end)
+			event.Sidechain = s.sidechain.collect()
+			s.emit(event)
+		}
+		return steerErr
 	}
 	if resp.TurnID == "" {
 		return fmt.Errorf("codex app-server turn/steer returned empty turn id")
@@ -764,7 +807,7 @@ func (s *appServerSession) handleApprovalRequest(rawID json.RawMessage, method s
 	s.pendingApprovals[requestID] = ch
 	s.approvalsMu.Unlock()
 
-	s.flushPendingAsThinking()
+	s.flushPendingAsCommentary()
 	s.emit(core.Event{
 		Type:         core.EventPermissionRequest,
 		RequestID:    requestID,
@@ -811,7 +854,7 @@ func (s *appServerSession) handlePermissionsApproval(rawID json.RawMessage, para
 	s.pendingApprovals[requestID] = ch
 	s.approvalsMu.Unlock()
 
-	s.flushPendingAsThinking()
+	s.flushPendingAsCommentary()
 	s.emit(core.Event{
 		Type:         core.EventPermissionRequest,
 		RequestID:    requestID,
@@ -879,7 +922,7 @@ func (s *appServerSession) handleRequestUserInput(rawID json.RawMessage, paramsR
 	s.pendingApprovals[requestID] = ch
 	s.approvalsMu.Unlock()
 
-	s.flushPendingAsThinking()
+	s.flushPendingAsCommentary()
 	s.emit(core.Event{
 		Type:         core.EventPermissionRequest,
 		RequestID:    requestID,
@@ -1184,18 +1227,26 @@ func (s *appServerSession) readLoop(r io.Reader) {
 
 func (s *appServerSession) stderrLoop(r io.Reader) {
 	defer s.wg.Done()
-	scanner := bufio.NewScanner(r)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	reader := bufio.NewReaderSize(r, appServerStderrLineLimit)
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		line := strings.TrimSpace(string(chunk))
+		if errors.Is(err, bufio.ErrBufferFull) {
+			// Keep draining past an over-long line: once nobody reads the
+			// pipe, Codex blocks on its next stderr write and the session hangs.
+			for errors.Is(err, bufio.ErrBufferFull) {
+				_, err = reader.ReadSlice('\n')
+			}
+			slog.Debug("codex app-server stderr (truncated)", "line", line)
+		} else if line != "" {
+			slog.Debug("codex app-server stderr", "line", line)
 		}
-		slog.Debug("codex app-server stderr", "line", line)
-	}
-	if err := scanner.Err(); err != nil && s.ctx.Err() == nil {
-		slog.Debug("codex app-server stderr read failed", "error", err)
+		if err != nil {
+			if !errors.Is(err, io.EOF) && s.ctx.Err() == nil {
+				slog.Debug("codex app-server stderr read failed", "error", err)
+			}
+			return
+		}
 	}
 }
 
@@ -1228,16 +1279,23 @@ func (s *appServerSession) finishTransport(err error) {
 	s.stateMu.Lock()
 	s.alive.Store(false)
 	active := s.currentTurn != ""
+	var start, end *codexTokenUsage
 	if active {
 		s.currentTurn = ""
 		s.pendingMsgs = s.pendingMsgs[:0]
 		s.turnRevision++
+		start, end = s.turnTokens.finishTurn()
 	}
 	s.stateMu.Unlock()
 	s.rejectPending(err)
 	s.rejectPendingApprovals(err)
-	if active {
-		s.emitError(err)
+	if active && err != nil {
+		// The lost turn consumed tokens too, and the next turn's baseline is
+		// already past them: report them with the error, or they are lost.
+		event := core.Event{Type: core.EventError, Error: err}
+		applyCodexTurnUsage(&event, start, end)
+		event.Sidechain = s.sidechain.collect()
+		s.emit(event)
 	}
 }
 
@@ -1263,7 +1321,12 @@ func (s *appServerSession) handleResponse(resp rpcResponseEnvelope) {
 }
 
 func (s *appServerSession) handleNotification(method string, paramsRaw json.RawMessage) {
+	if s.handleSubagentNotification(method, paramsRaw) {
+		return
+	}
 	switch method {
+	case "thread/goal/updated", "thread/goal/cleared":
+		s.handleGoalNotification(method, paramsRaw)
 	case "turn/started":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.acceptsThreadNotification(method, notif.ThreadID) {
@@ -1320,6 +1383,9 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 		var notif appServerThreadTokenUsageNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.acceptsTurnNotification(method, notif.ThreadID, notif.TurnID) {
 			s.storeContextUsage(mapAppServerTokenUsage(notif))
+			s.stateMu.Lock()
+			s.turnTokens.observe(notif.TokenUsage.Total, notif.TokenUsage.Last)
+			s.stateMu.Unlock()
 		}
 
 	case "error":
@@ -1364,38 +1430,47 @@ func (s *appServerSession) acceptsTurnNotification(method, threadID, turnID stri
 
 func (s *appServerSession) handleItemStarted(item map[string]any) {
 	itemType, _ := item["type"].(string)
+	callID, _ := item["id"].(string)
 	if itemType == "" {
 		return
 	}
 
 	switch itemType {
+	case "collabAgentToolCall":
+		s.flushPendingAsCommentary()
+		s.subagents.collab(item, s.emit)
+		return
+	case "subAgentActivity":
+		s.flushPendingAsCommentary()
+		s.subagents.activity(item, s.emit)
+		return
 	case "agentMessage", "reasoning", "userMessage", "plan", "hookPrompt", "contextCompaction":
 		return
 	}
 
-	s.flushPendingAsThinking()
+	s.flushPendingAsCommentary()
 
 	switch itemType {
 	case "commandExecution":
 		command, _ := item["command"].(string)
-		s.emit(core.Event{Type: core.EventToolUse, ToolName: "Bash", ToolInput: command})
+		s.emit(core.Event{Type: core.EventToolUse, ToolCallID: callID, ToolName: "Bash", ToolInput: command})
 
 	case "mcpToolCall":
 		server, _ := item["server"].(string)
 		tool, _ := item["tool"].(string)
 		name := strings.Trim(strings.Join([]string{server, tool}, ":"), ":")
-		s.emit(core.Event{Type: core.EventToolUse, ToolName: "MCP", ToolInput: name + "\n" + appServerJSON(item["arguments"])})
+		s.emit(core.Event{Type: core.EventToolUse, ToolCallID: callID, ToolName: name, ToolInput: appServerJSON(item["arguments"])})
 
 	case "webSearch":
-		query, _ := item["query"].(string)
-		s.emit(core.Event{Type: core.EventToolUse, ToolName: "WebSearch", ToolInput: query})
+		query := codexExtractToolInput(item)
+		s.emit(core.Event{Type: core.EventToolUse, ToolCallID: callID, ToolName: "WebSearch", ToolInput: query})
 
 	case "dynamicToolCall":
 		tool, _ := item["tool"].(string)
-		s.emit(core.Event{Type: core.EventToolUse, ToolName: tool, ToolInput: appServerJSON(item["arguments"])})
+		s.emit(core.Event{Type: core.EventToolUse, ToolCallID: callID, ToolName: tool, ToolInput: appServerJSON(item["arguments"])})
 
 	case "fileChange":
-		s.emit(core.Event{Type: core.EventToolUse, ToolName: "Patch", ToolInput: appServerJSON(item["changes"])})
+		s.emit(core.Event{Type: core.EventToolUse, ToolCallID: callID, ToolName: "Patch", ToolInput: appServerJSON(item["changes"])})
 	}
 }
 
@@ -1405,7 +1480,17 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 		return
 	}
 
+	if result, ok := appServerToolResultEvent(item); ok {
+		s.emit(result)
+		return
+	}
 	switch itemType {
+	case "collabAgentToolCall":
+		s.flushPendingAsCommentary()
+		s.subagents.collab(item, s.emit)
+	case "subAgentActivity":
+		s.flushPendingAsCommentary()
+		s.subagents.activity(item, s.emit)
 	case "reasoning":
 		text := appServerReasoningText(item)
 		if text != "" {
@@ -1418,11 +1503,29 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 		}
 		text, _ := item["text"].(string)
 		if strings.TrimSpace(text) != "" {
+			if phase, _ := item["phase"].(string); phase == "commentary" {
+				s.flushPendingAsCommentary()
+				s.emit(core.Event{Type: core.EventCommentary, Content: text})
+				return
+			}
+			if phase, _ := item["phase"].(string); phase == "partial_answer" || phase == "final_answer" {
+				s.flushPendingAsCommentary()
+				s.emit(core.Event{Type: core.EventText, Content: text})
+				return
+			}
 			s.stateMu.Lock()
 			s.pendingMsgs = append(s.pendingMsgs, text)
 			s.stateMu.Unlock()
 		}
 
+	}
+}
+
+// appServerToolResultEvent decodes tool results for both parent and child cards.
+func appServerToolResultEvent(item map[string]any) (core.Event, bool) {
+	itemType, _ := item["type"].(string)
+	callID, _ := item["id"].(string)
+	switch itemType {
 	case "commandExecution":
 		command, _ := item["command"].(string)
 		status, _ := item["status"].(string)
@@ -1433,53 +1536,70 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 			exitCodePtr = &exitCode
 		}
 		success := appServerToolSuccess(status, exitCodePtr)
-		s.emit(core.Event{
+		return core.Event{
 			Type:         core.EventToolResult,
+			ToolCallID:   callID,
 			ToolName:     "Bash",
 			ToolInput:    command,
-			ToolResult:   truncate(strings.TrimSpace(output), 500),
+			ToolResult:   core.BoundedToolOutput(output),
 			ToolStatus:   strings.TrimSpace(status),
 			ToolExitCode: exitCodePtr,
 			ToolSuccess:  &success,
-		})
+		}, true
+
+	case "fileChange":
+		status, _ := item["status"].(string)
+		success := appServerToolSuccess(status, nil)
+		return core.Event{Type: core.EventToolResult, ToolCallID: callID, ToolName: "Patch", ToolInput: appServerJSON(item["changes"]), ToolStatus: status, ToolSuccess: &success}, true
 
 	case "mcpToolCall":
 		tool, _ := item["tool"].(string)
+		server, _ := item["server"].(string)
+		tool = strings.Trim(strings.Join([]string{server, tool}, ":"), ":")
 		status, _ := item["status"].(string)
-		result := appServerJSON(item["result"])
+		result := appServerToolResultText(item["result"])
 		if errText := appServerJSON(item["error"]); strings.TrimSpace(errText) != "" && result == "" {
 			result = errText
 		}
 		success := appServerToolSuccess(status, nil)
-		s.emit(core.Event{
+		if result, ok := item["result"].(map[string]any); ok {
+			if isError, _ := result["isError"].(bool); isError {
+				success = false
+			}
+		}
+		return core.Event{
 			Type:        core.EventToolResult,
+			ToolCallID:  callID,
 			ToolName:    tool,
-			ToolResult:  truncate(strings.TrimSpace(result), 500),
+			ToolResult:  core.BoundedToolOutput(result),
 			ToolStatus:  strings.TrimSpace(status),
 			ToolSuccess: &success,
-		})
+		}, true
 
 	case "webSearch":
-		query, _ := item["query"].(string)
-		s.emit(core.Event{
+		query := codexExtractToolInput(item)
+		return core.Event{
 			Type:       core.EventToolResult,
+			ToolCallID: callID,
 			ToolName:   "WebSearch",
-			ToolResult: truncate(strings.TrimSpace(query), 500),
-		})
+			ToolResult: core.BoundedToolOutput(query),
+		}, true
 
 	case "dynamicToolCall":
 		tool, _ := item["tool"].(string)
 		status, _ := item["status"].(string)
 		result := appServerDynamicToolText(item["contentItems"])
 		success := appServerToolSuccess(status, nil)
-		s.emit(core.Event{
+		return core.Event{
 			Type:        core.EventToolResult,
+			ToolCallID:  callID,
 			ToolName:    tool,
-			ToolResult:  truncate(strings.TrimSpace(result), 500),
+			ToolResult:  core.BoundedToolOutput(result),
 			ToolStatus:  strings.TrimSpace(status),
 			ToolSuccess: &success,
-		})
+		}, true
 	}
+	return core.Event{}, false
 }
 
 func appServerReasoningText(item map[string]any) string {
@@ -1516,12 +1636,52 @@ func appServerDynamicToolText(raw any) string {
 		}
 		if text, _ := m["text"].(string); strings.TrimSpace(text) != "" {
 			parts = append(parts, text)
+		} else if kind, _ := m["type"].(string); kind != "" {
+			parts = append(parts, "["+kind+"]")
 		}
 	}
 	if len(parts) == 0 {
-		return appServerJSON(raw)
+		return ""
 	}
 	return strings.Join(parts, "\n")
+}
+
+// MCP results wrap readable text in content blocks. Render those blocks rather
+// than spending the card's output budget on transport JSON and escaped newlines.
+func appServerToolResultText(raw any) string {
+	if result, ok := raw.(map[string]any); ok {
+		var parts []string
+		if content, ok := result["content"].([]any); ok {
+			for _, block := range content {
+				if block, ok := block.(map[string]any); ok {
+					if text, ok := block["text"].(string); ok {
+						parts = append(parts, text)
+					} else if kind, _ := block["type"].(string); kind != "" {
+						parts = append(parts, "["+kind+"]")
+					}
+				}
+			}
+		}
+		if structured, ok := result["structuredContent"]; ok && appServerJSON(structured) != "" {
+			if data, err := json.MarshalIndent(structured, "", "  "); err == nil {
+				parts = append(parts, string(data))
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+	if text, ok := raw.(string); ok {
+		return text
+	}
+	if raw == nil {
+		return ""
+	}
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func appServerToolSuccess(status string, exitCode *int) bool {
@@ -1720,9 +1880,13 @@ func (s *appServerSession) completeTurn() {
 	}
 	s.currentTurn = ""
 	s.turnRevision++
+	start, end := s.turnTokens.finishTurn()
 	s.stateMu.Unlock()
 	s.flushPendingAsText()
-	s.emit(core.Event{Type: core.EventResult, SessionID: s.CurrentSessionID(), Done: true})
+	event := core.Event{Type: core.EventResult, SessionID: s.CurrentSessionID(), Done: true}
+	applyCodexTurnUsage(&event, start, end)
+	event.Sidechain = s.sidechain.collect()
+	s.emit(event)
 }
 
 func (s *appServerSession) failTurn(err error) bool {
@@ -1733,13 +1897,19 @@ func (s *appServerSession) failTurn(err error) bool {
 	}
 	s.currentTurn = ""
 	s.turnRevision++
+	start, end := s.turnTokens.finishTurn()
 	s.pendingMsgs = s.pendingMsgs[:0]
 	s.stateMu.Unlock()
-	s.emitError(err)
+	if err != nil {
+		event := core.Event{Type: core.EventError, Error: err}
+		applyCodexTurnUsage(&event, start, end)
+		event.Sidechain = s.sidechain.collect()
+		s.emit(event)
+	}
 	return true
 }
 
-func (s *appServerSession) flushPendingAsThinking() {
+func (s *appServerSession) flushPendingAsCommentary() {
 	s.stateMu.Lock()
 	msgs := append([]string(nil), s.pendingMsgs...)
 	s.pendingMsgs = s.pendingMsgs[:0]
@@ -1747,7 +1917,7 @@ func (s *appServerSession) flushPendingAsThinking() {
 
 	for _, text := range msgs {
 		if strings.TrimSpace(text) != "" {
-			s.emit(core.Event{Type: core.EventThinking, Content: text})
+			s.emit(core.Event{Type: core.EventCommentary, Content: text})
 		}
 	}
 }

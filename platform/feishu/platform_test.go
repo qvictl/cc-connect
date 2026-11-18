@@ -22,7 +22,7 @@ import (
 )
 
 func TestNew_DefaultsToInteractivePlatform(t *testing.T) {
-	p, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret"})
+	p, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -32,7 +32,7 @@ func TestNew_DefaultsToInteractivePlatform(t *testing.T) {
 }
 
 func TestNew_CanDisableInteractiveCards(t *testing.T) {
-	p, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": false})
+	p, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": false})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -42,7 +42,7 @@ func TestNew_CanDisableInteractiveCards(t *testing.T) {
 }
 
 func TestNew_DisabledInteractiveCardsDoesNotStartPreviewCard(t *testing.T) {
-	pAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": false})
+	pAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": false})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -61,7 +61,7 @@ func TestNew_DisabledInteractiveCardsDoesNotStartPreviewCard(t *testing.T) {
 }
 
 func TestNew_ProgressStyleDefaultLegacy(t *testing.T) {
-	p, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret"})
+	p, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -80,7 +80,7 @@ func TestNew_ProgressStyleSupportsCompactAndCard(t *testing.T) {
 		t.Run(style, func(t *testing.T) {
 			p, err := New(map[string]any{
 				"app_id":         "cli_xxx",
-				"app_secret":     "secret",
+				"app_secret":     fixedTestAppSecret,
 				"progress_style": style,
 			})
 			if err != nil {
@@ -107,7 +107,7 @@ func TestNew_ProgressStyleSupportsCompactAndCard(t *testing.T) {
 func TestNew_ProgressStyleRejectsInvalidValue(t *testing.T) {
 	_, err := New(map[string]any{
 		"app_id":         "cli_xxx",
-		"app_secret":     "secret",
+		"app_secret":     fixedTestAppSecret,
 		"progress_style": "invalid-style",
 	})
 	if err == nil {
@@ -197,7 +197,7 @@ func TestBuildFeishuFileMessageContent(t *testing.T) {
 }
 
 func TestInteractivePlatform_OnMessagePassesCardSenderToHandler(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -261,7 +261,7 @@ func TestInteractivePlatform_OnMessagePassesCardSenderToHandler(t *testing.T) {
 }
 
 func TestInteractivePlatform_CardActionPassesCardSenderToHandler(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -269,6 +269,7 @@ func TestInteractivePlatform_CardActionPassesCardSenderToHandler(t *testing.T) {
 	if !ok {
 		t.Fatalf("platform type = %T, want *interactivePlatform", platformAny)
 	}
+	bindFixturePlatform(t, ip.Platform, ip.domain)
 
 	openID := "ou_test_user"
 	chatID := "oc_test_chat"
@@ -315,7 +316,7 @@ func TestInteractivePlatform_CardActionPassesCardSenderToHandler(t *testing.T) {
 }
 
 func TestInteractivePlatform_CardActionActWithoutCardResponseDoesNotWarn(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -356,7 +357,7 @@ func TestInteractivePlatform_CardActionActWithoutCardResponseDoesNotWarn(t *test
 }
 
 func TestInteractivePlatform_CardActionFormSubmitPassesSelectedIDs(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -401,7 +402,7 @@ func TestInteractivePlatform_CardActionFormSubmitPassesSelectedIDs(t *testing.T)
 }
 
 func TestInteractivePlatform_CardActionFormSubmitUsesActionNameFallback(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -445,7 +446,7 @@ func TestInteractivePlatform_CardActionFormSubmitUsesActionNameFallback(t *testi
 }
 
 func TestInteractivePlatform_CardActionFormCancelUsesActionNameFallback(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -485,11 +486,12 @@ func TestInteractivePlatform_CardActionFormCancelUsesActionNameFallback(t *testi
 }
 
 func TestInteractivePlatform_CardActionUsesCallbackSessionKey(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "domain": stubOpenAPIDomain(t), "thread_isolation": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true, "domain": stubOpenAPIDomain(t), "thread_isolation": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 	ip := platformAny.(*interactivePlatform)
+	bindFixturePlatform(t, ip.Platform, ip.domain)
 
 	wantSessionKey := "feishu:oc_test_chat:root:om_root_thread"
 	msgCh := make(chan *core.Message, 1)
@@ -531,7 +533,7 @@ func TestInteractivePlatform_CardActionUsesCallbackSessionKey(t *testing.T) {
 }
 
 func TestInteractivePlatform_ModelCardActionReturnsCardUpdate(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -576,7 +578,7 @@ func TestInteractivePlatform_ModelCardActionReturnsCardUpdate(t *testing.T) {
 
 func TestNewLark_PlatformNameAndDomain(t *testing.T) {
 	p, err := newPlatform("lark", lark.LarkBaseUrl, map[string]any{
-		"app_id": "cli_xxx", "app_secret": "secret",
+		"app_id": "cli_xxx", "app_secret": fixedTestAppSecret,
 	})
 	if err != nil {
 		t.Fatalf("newPlatform(lark) error = %v", err)
@@ -618,7 +620,7 @@ func TestPlatformShouldUseWebhookMode(t *testing.T) {
 
 func TestNewFeishu_PlatformNameAndDomain(t *testing.T) {
 	p, err := New(map[string]any{
-		"app_id": "cli_xxx", "app_secret": "secret",
+		"app_id": "cli_xxx", "app_secret": fixedTestAppSecret,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -631,7 +633,7 @@ func TestNewFeishu_PlatformNameAndDomain(t *testing.T) {
 func TestNewFeishu_CustomDomainOverride(t *testing.T) {
 	customDomain := "https://open.example.invalid"
 	p, err := New(map[string]any{
-		"app_id": "cli_xxx", "app_secret": "secret", "domain": customDomain,
+		"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "domain": customDomain,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -647,7 +649,7 @@ func TestNewFeishu_CustomDomainOverride(t *testing.T) {
 
 func TestNewFeishu_InvalidCustomDomain(t *testing.T) {
 	_, err := New(map[string]any{
-		"app_id": "cli_xxx", "app_secret": "secret", "domain": "://bad",
+		"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "domain": "://bad",
 	})
 	if err == nil {
 		t.Fatal("expected invalid domain error")
@@ -656,7 +658,7 @@ func TestNewFeishu_InvalidCustomDomain(t *testing.T) {
 
 func TestLark_SessionKeyPrefix(t *testing.T) {
 	p, err := newPlatform("lark", lark.LarkBaseUrl, map[string]any{
-		"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true,
+		"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true,
 	})
 	if err != nil {
 		t.Fatalf("newPlatform(lark) error = %v", err)
@@ -717,7 +719,7 @@ func TestLark_SessionKeyPrefix(t *testing.T) {
 
 func TestLark_ThreadIsolationUsesRootSessionKey(t *testing.T) {
 	p, err := newPlatform("lark", lark.LarkBaseUrl, map[string]any{
-		"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "thread_isolation": true,
+		"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true, "thread_isolation": true,
 	})
 	if err != nil {
 		t.Fatalf("newPlatform(lark) error = %v", err)
@@ -784,7 +786,7 @@ func TestLark_ThreadIsolationUsesRootSessionKey(t *testing.T) {
 
 func TestLark_GroupReplyAllWithThreadIsolationUsesRootSessionKeyWithoutMention(t *testing.T) {
 	p, err := newPlatform("lark", lark.LarkBaseUrl, map[string]any{
-		"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true,
+		"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true,
 		"group_reply_all": true, "thread_isolation": true,
 	})
 	if err != nil {
@@ -899,7 +901,7 @@ func TestBuildReplyMessageReqBody_SetsReplyInThreadFlag(t *testing.T) {
 
 func TestLark_ReconstructReplyCtx(t *testing.T) {
 	p, err := newPlatform("lark", lark.LarkBaseUrl, map[string]any{
-		"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": false,
+		"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": false,
 	})
 	if err != nil {
 		t.Fatalf("newPlatform(lark) error = %v", err)
@@ -1080,7 +1082,7 @@ func TestBuildPreviewCardJSON_ProgressPayloadSeparatesReasoningAndTools(t *testi
 
 func TestBuildPreviewCardJSON_ProgressPayloadUsesToolDescriptors(t *testing.T) {
 	payload := core.BuildProgressCardPayloadV2([]core.ProgressCardEntry{
-		{Kind: core.ProgressEntryToolUse, Tool: "web_fetch", Text: "https://example.com/docs?token=secret"},
+		{Kind: core.ProgressEntryToolUse, Tool: "web_fetch", Text: "https://example.com/docs?token=TEST_ONLY_FIXED_FEISHU_URL_TOKEN"},
 	}, false, "Codex", core.LangEnglish, core.ProgressCardStateRunning)
 
 	panels := collectCardPanels(t, buildPreviewCardJSON(payload))
@@ -1157,7 +1159,7 @@ func TestBuildRichCard_RendersThinkingAndToolResultRows(t *testing.T) {
 		},
 	}, "done", true, "")
 
-	for _, want := range []string{"Inspecting event routing", "echo hi", "completed", "exit: 0", "hi"} {
+	for _, want := range []string{"Inspecting event routing", "echo hi", "completed", "exit code: `0`", "hi"} {
 		if !strings.Contains(cardJSON, want) {
 			t.Fatalf("rich card should contain %q, got %q", want, cardJSON)
 		}
@@ -1289,7 +1291,7 @@ func TestBuildRichCard_SeparatesReasoningAndTools(t *testing.T) {
 
 func TestBuildRichCard_UsesToolDescriptorsForAliases(t *testing.T) {
 	cardJSON := buildRichCard(core.CardStatusWorking, "", []core.ToolStep{
-		{Kind: core.ToolStepKindTool, Name: "web_fetch", Summary: "https://example.com/docs?token=secret"},
+		{Kind: core.ToolStepKindTool, Name: "web_fetch", Summary: "https://example.com/docs?token=TEST_ONLY_FIXED_FEISHU_URL_TOKEN"},
 	}, "answer", true, "")
 
 	panels := collectCardPanels(t, cardJSON)
@@ -1779,7 +1781,7 @@ func TestAllowChat_FiltersGroupMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p, err := newPlatform("feishu", lark.FeishuBaseUrl, map[string]any{
-				"app_id": "cli_xxx", "app_secret": "secret",
+				"app_id": "cli_xxx", "app_secret": fixedTestAppSecret,
 				"enable_feishu_card": true,
 				"group_reply_all":    true,
 				"allow_chat":         tt.allowChat,
@@ -1979,7 +1981,7 @@ func (m *mockRefreshPlatform) RefreshCard(ctx context.Context, sessionKey string
 }
 
 func TestCardAction_NavFast_ReturnsCard(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2014,7 +2016,7 @@ func TestCardAction_NavFast_ReturnsCard(t *testing.T) {
 }
 
 func TestCardAction_NavSlow_ReturnsToastThenRefreshes(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2065,7 +2067,7 @@ func TestCardAction_NavSlow_ReturnsToastThenRefreshes(t *testing.T) {
 }
 
 func TestCardAction_NavSlow_NilCard_NoRefresh(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2111,7 +2113,7 @@ func TestOnMessage_OldMessageAfterRestartIsFiltered(t *testing.T) {
 	core.StartTime = restartTime
 	defer func() { core.StartTime = orig }()
 
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret"})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2170,7 +2172,7 @@ func TestOnMessage_NewMessageAfterRestartIsProcessed(t *testing.T) {
 	core.StartTime = restartTime
 	defer func() { core.StartTime = orig }()
 
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret"})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2233,7 +2235,7 @@ func TestOnMessage_GracePeriodMessageIsProcessed(t *testing.T) {
 	core.StartTime = restartTime
 	defer func() { core.StartTime = orig }()
 
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret"})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2289,7 +2291,7 @@ func TestOnMessage_GracePeriodMessageIsProcessed(t *testing.T) {
 }
 
 func TestCmdAction_WithoutAfterClick_DispatchesAndReturnsNil(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2297,6 +2299,7 @@ func TestCmdAction_WithoutAfterClick_DispatchesAndReturnsNil(t *testing.T) {
 	if !ok {
 		t.Fatalf("platform type = %T, want *interactivePlatform", platformAny)
 	}
+	bindFixturePlatform(t, ip.Platform, ip.domain)
 
 	msgCh := make(chan *core.Message, 1)
 	ip.handler = func(_ core.Platform, msg *core.Message) { msgCh <- msg }
@@ -2326,7 +2329,7 @@ func TestCmdAction_WithoutAfterClick_DispatchesAndReturnsNil(t *testing.T) {
 }
 
 func TestCmdAction_WithAfterClick_DispatchesAndReturnsCard(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2334,6 +2337,7 @@ func TestCmdAction_WithAfterClick_DispatchesAndReturnsCard(t *testing.T) {
 	if !ok {
 		t.Fatalf("platform type = %T, want *interactivePlatform", platformAny)
 	}
+	bindFixturePlatform(t, ip.Platform, ip.domain)
 
 	msgCh := make(chan *core.Message, 1)
 	ip.handler = func(_ core.Platform, msg *core.Message) { msgCh <- msg }
@@ -2388,7 +2392,7 @@ func TestCmdAction_WithAfterClick_DispatchesAndReturnsCard(t *testing.T) {
 }
 
 func TestCmdAction_WithAfterClick_SessionKeyRoutes(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2396,6 +2400,7 @@ func TestCmdAction_WithAfterClick_SessionKeyRoutes(t *testing.T) {
 	if !ok {
 		t.Fatalf("platform type = %T, want *interactivePlatform", platformAny)
 	}
+	bindFixturePlatform(t, ip.Platform, ip.domain)
 
 	const wantSessionKey = "custom-session-abc"
 	msgCh := make(chan *core.Message, 1)

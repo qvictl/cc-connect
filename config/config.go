@@ -201,11 +201,22 @@ const (
 	DisplayModeFull    = "full"    // show thinking + tool messages as separate messages (default)
 	DisplayModeCompact = "compact" // hide thinking/tool, each text segment is a separate card
 	DisplayModeQuiet   = "quiet"   // hide thinking/tool, all text appends to one card
+	// DisplayModeFinal sends only each turn's final answer: no streaming
+	// card, preview, thinking, tool, footer or system notices. /quiet and
+	// /config mode cannot change it.
+	DisplayModeFinal = "final"
+)
+
+const (
+	NarrationMessage  = "message"
+	NarrationProgress = "progress"
 )
 
 // DisplayConfig controls how intermediate messages (thinking, tool output) are shown.
 type DisplayConfig struct {
-	Mode                 *string `toml:"mode"`                   // "full" (default), "compact", or "quiet"
+	Narration            *string `toml:"narration"`
+	CommentaryMessages   *bool   `toml:"commentary_messages"`    // standalone user-facing progress messages; default false
+	Mode                 *string `toml:"mode"`                   // "full" (default), "compact", "quiet", or "final"
 	CardMode             *string `toml:"card_mode"`              // "legacy" (default) or "rich" (Card 2.0 Feishu)
 	ThinkingMessages     *bool   `toml:"thinking_messages"`      // whether thinking messages are shown; default true
 	ThinkingMaxLen       *int    `toml:"thinking_max_len"`       // max chars for thinking messages; 0 = no truncation; default 300
@@ -546,6 +557,7 @@ type ProjectConfig struct {
 	// entirely (the per-line indicator flags above become no-ops).
 	ReplyFooter      *bool        `toml:"reply_footer,omitempty"`
 	InjectSender     *bool        `toml:"inject_sender,omitempty"`     // prepend sender identity (platform + user ID) to each message sent to the agent
+	BusyAction       string       `toml:"busy_action,omitempty"`       // "queue" (default) | "inject": a message sent while a turn runs goes into it, like /ps
 	DisabledCommands []string     `toml:"disabled_commands,omitempty"` // commands to disable for this project (e.g. ["restart", "upgrade"])
 	AdminFrom        string       `toml:"admin_from,omitempty"`        // comma-separated user IDs allowed to run privileged commands; "*" = all allowed users
 	Users            *UsersConfig `toml:"users,omitempty"`             // per-user role config; nil = legacy behavior
@@ -641,6 +653,9 @@ type CommandConfig struct {
 	Prompt      string `toml:"prompt"`   // prompt template (mutually exclusive with Exec)
 	Exec        string `toml:"exec"`     // shell command to execute (mutually exclusive with Prompt)
 	WorkDir     string `toml:"work_dir"` // optional: working directory for exec command
+	// Quiet (exec commands only) sends no progress message and stdout as
+	// plain text, nothing when stdout is empty; failures are still reported.
+	Quiet bool `toml:"quiet,omitempty"`
 }
 
 type LogConfig struct {
@@ -886,6 +901,26 @@ func projectQuietEffective(cfg *Config, proj *ProjectConfig) bool {
 	return false
 }
 
+// EffectiveCommentaryMessages resolves explicit standalone progress opt-in.
+// Absent or false preserves the existing text/card path, independently of quiet mode.
+func EffectiveCommentaryMessages(cfg *Config, proj *ProjectConfig) bool {
+	if proj != nil && proj.Display != nil && proj.Display.CommentaryMessages != nil {
+		return *proj.Display.CommentaryMessages
+	}
+	return cfg != nil && cfg.Display.CommentaryMessages != nil && *cfg.Display.CommentaryMessages
+}
+
+// EffectiveNarration resolves project override, then global, then the legacy default.
+func EffectiveNarration(cfg *Config, proj *ProjectConfig) string {
+	if proj != nil && proj.Display != nil && proj.Display.Narration != nil {
+		return *proj.Display.Narration
+	}
+	if cfg != nil && cfg.Display.Narration != nil {
+		return *cfg.Display.Narration
+	}
+	return NarrationMessage
+}
+
 // EffectiveDisplay resolves the per-project [projects.display] override on top
 // of the global [display] block, falling back to built-in defaults.
 //
@@ -1002,6 +1037,12 @@ func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMe
 		cfg.Display.HideAgentFooter,
 		false,
 	)
+
+	// Final output shows nothing but the answer, whatever the other fields say.
+	if mode == DisplayModeFinal {
+		thinkingMessages, toolMessages = false, false
+		showContextIndicator, replyFooter, hideAgentFooter = false, false, true
+	}
 
 	return
 }
@@ -1138,6 +1179,11 @@ func (c *Config) validateInternal(permissive bool) error {
 		if proj.AgentSessionIdleTimeoutMins != nil && *proj.AgentSessionIdleTimeoutMins < 0 {
 			return fmt.Errorf("config: %s.agent_session_idle_timeout_mins must be >= 0", prefix)
 		}
+		switch strings.ToLower(strings.TrimSpace(proj.BusyAction)) {
+		case "", "queue", "inject":
+		default:
+			return fmt.Errorf("config: %s.busy_action must be \"queue\" or \"inject\"", prefix)
+		}
 		if err := validateRunAsUser(prefix, proj.RunAsUser); err != nil {
 			return err
 		}
@@ -1163,9 +1209,9 @@ func validateDisplayConfig(prefix string, display *DisplayConfig) error {
 	}
 	if display.Mode != nil {
 		switch *display.Mode {
-		case DisplayModeFull, DisplayModeCompact, DisplayModeQuiet:
+		case DisplayModeFull, DisplayModeCompact, DisplayModeQuiet, DisplayModeFinal:
 		default:
-			return fmt.Errorf("config: %s.mode must be \"full\", \"compact\", or \"quiet\"", prefix)
+			return fmt.Errorf("config: %s.mode must be \"full\", \"compact\", \"quiet\", or \"final\"", prefix)
 		}
 	}
 	if display.CardMode != nil {
@@ -1177,6 +1223,13 @@ func validateDisplayConfig(prefix string, display *DisplayConfig) error {
 	}
 	if display.HistoryMaxLen != nil && *display.HistoryMaxLen < 0 {
 		return fmt.Errorf("config: %s.history_max_len must be >= 0", prefix)
+	}
+	if display.Narration != nil {
+		switch *display.Narration {
+		case NarrationMessage, NarrationProgress:
+		default:
+			return fmt.Errorf("config: %s.narration must be \"message\" or \"progress\"", prefix)
+		}
 	}
 	return nil
 }
@@ -3664,6 +3717,9 @@ func GetProjectConfigDetails(projectName string) map[string]any {
 		if p.InjectSender != nil {
 			result["inject_sender"] = *p.InjectSender
 		}
+		if strings.TrimSpace(p.BusyAction) != "" {
+			result["busy_action"] = p.BusyAction
+		}
 		if strings.TrimSpace(p.Mode) != "" {
 			result["workspace_mode"] = p.Mode
 		}
@@ -3883,6 +3939,7 @@ func GetGlobalSettings() map[string]any {
 		result["max_turn_time_mins"] = 0
 	}
 	// Display
+	result["commentary_messages"] = EffectiveCommentaryMessages(cfg, nil)
 	if cfg.Display.ThinkingMessages != nil {
 		result["thinking_messages"] = *cfg.Display.ThinkingMessages
 	} else {
@@ -3941,6 +3998,7 @@ func GetGlobalSettings() map[string]any {
 
 // GlobalSettingsUpdate holds fields to update in global config.
 type GlobalSettingsUpdate struct {
+	CommentaryMessages *bool   `json:"commentary_messages"`
 	Language           *string `json:"language"`
 	AttachmentSend     *string `json:"attachment_send"`
 	LogLevel           *string `json:"log_level"`
@@ -3982,6 +4040,9 @@ func SaveGlobalSettings(u GlobalSettingsUpdate) error {
 	}
 	if u.IdleTimeoutMins != nil {
 		cfg.IdleTimeoutMins = u.IdleTimeoutMins
+	}
+	if u.CommentaryMessages != nil {
+		cfg.Display.CommentaryMessages = u.CommentaryMessages
 	}
 	if u.ThinkingMessages != nil {
 		cfg.Display.ThinkingMessages = u.ThinkingMessages

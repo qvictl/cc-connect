@@ -16,7 +16,7 @@ import (
 
 // Agent-turn smoke against the scripted fake model (tests/blackbox/fakemodel):
 // the real agent CLI and the real cc-connect, no model key, deterministic
-// answers. Each test runs per agent, on both backends and on the profiles
+// answers. Each test runs per agent, on the isolated binary and the profiles
 // where the behaviour differs.
 
 const fakeTurnTimeout = 2 * time.Minute

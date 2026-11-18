@@ -39,6 +39,9 @@ type opencodeSession struct {
 	alive             atomic.Bool
 	expectingContinue atomic.Bool // true when compaction_continue received, waiting for next step
 	resultSent        atomic.Bool // true when EventResult has been sent for this turn
+	turnUsage         core.TokenUsage
+	usageSteps        map[string]bool
+	sidechain         opencodeSidechainMeter
 }
 
 func newOpencodeSession(ctx context.Context, cmd string, extraArgs []string, workDir, model, mode, agentName, resumeID string, extraEnv []string) (*opencodeSession, error) {
@@ -60,6 +63,7 @@ func newOpencodeSession(ctx context.Context, cmd string, extraArgs []string, wor
 
 	if resumeID != "" && resumeID != core.ContinueSession {
 		s.chatID.Store(resumeID)
+		s.sidechain.begin(opencodeDataDir(extraEnv), resumeID, true)
 	}
 
 	return s, nil
@@ -79,6 +83,8 @@ func (s *opencodeSession) Send(prompt string, messageID string, images []core.Im
 	}
 
 	s.resultSent.Store(false)
+	s.turnUsage = core.TokenUsage{}
+	s.usageSteps = nil
 	s.expectingContinue.Store(false)
 
 	chatID := s.CurrentSessionID()
@@ -97,11 +103,7 @@ func (s *opencodeSession) Send(prompt string, messageID string, images []core.Im
 	// that readLoop waits for the process before delivering the result.
 	// Same setting as the gemini/kimi/antigravity adapters.
 	cmd.WaitDelay = 1 * time.Second
-	env := os.Environ()
-	if len(s.extraEnv) > 0 {
-		env = core.MergeEnv(env, s.extraEnv)
-	}
-	cmd.Env = env
+	cmd.Env = opencodeRunEnv(s.workDir, s.extraEnv)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -120,6 +122,26 @@ func (s *opencodeSession) Send(prompt string, messageID string, images []core.Im
 	go s.readLoop(cmd, stdout, &stderrBuf)
 
 	return nil
+}
+
+// opencodeRunEnv builds the environment for `opencode run`. opencode takes its
+// project directory from $PWD rather than the process cwd, and os/exec only
+// syncs PWD with cmd.Dir when cmd.Env is nil. Without the override, `run`
+// (which gets no --dir) would work in cc-connect's own directory instead of
+// the session's work dir.
+func opencodeRunEnv(workDir string, extraEnv []string) []string {
+	env := os.Environ()
+	if len(extraEnv) > 0 {
+		env = core.MergeEnv(env, extraEnv)
+	}
+	if workDir != "" {
+		pwd := workDir
+		if abs, err := filepath.Abs(pwd); err == nil {
+			pwd = abs
+		}
+		env = core.MergeEnv(env, []string{"PWD=" + pwd})
+	}
+	return env
 }
 
 func (s *opencodeSession) stageImages(prompt string, images []core.ImageAttachment) (string, []string, error) {
@@ -175,8 +197,8 @@ func (s *opencodeSession) buildRunArgs(prompt string, imagePaths []string, chatI
 	if s.model != "" {
 		args = append(args, "--model", s.model)
 	}
-	// The working directory is set as the process cwd in Send (cmd.Dir), like
-	// the other opencode invocations. `opencode run` has no --dir flag in
+	// The working directory reaches opencode as the process cwd and $PWD in
+	// Send (see opencodeRunEnv). `opencode run` has no --dir flag in
 	// opencode v2 and rejects it ("Unrecognized flag: --dir").
 
 	// Enable thinking blocks.
@@ -228,6 +250,7 @@ func (s *opencodeSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBu
 	if err := scanner.Err(); err != nil {
 		slog.Error("opencodeSession: scanner error", "error", err)
 		evt := core.Event{Type: core.EventError, Error: fmt.Errorf("read stdout: %w", err)}
+		s.takeUsage(&evt)
 		select {
 		case s.events <- evt:
 		case <-s.ctx.Done():
@@ -249,6 +272,7 @@ func (s *opencodeSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBu
 			slog.Warn("opencodeSession: cleared stale session ID")
 		}
 		evt := core.Event{Type: core.EventError, Error: fmt.Errorf("%s", stderrMsg)}
+		s.takeUsage(&evt)
 		select {
 		case s.events <- evt:
 		case <-s.ctx.Done():
@@ -432,6 +456,7 @@ func (s *opencodeSession) handleError(raw map[string]any) {
 	errMsg := extractErrorMessage(raw)
 	slog.Error("opencodeSession: agent error", "error", errMsg)
 	evt := core.Event{Type: core.EventError, Error: fmt.Errorf("%s", errMsg)}
+	s.takeUsage(&evt)
 	select {
 	case s.events <- evt:
 	case <-s.ctx.Done():
@@ -490,6 +515,7 @@ func (s *opencodeSession) handleStepStart(raw map[string]any) {
 	}
 	if sessionID != "" {
 		s.chatID.Store(sessionID)
+		s.sidechain.begin(opencodeDataDir(s.extraEnv), sessionID, false)
 		slog.Debug("opencodeSession: session started", "session_id", sessionID)
 	}
 }
@@ -499,6 +525,23 @@ func (s *opencodeSession) handleStepFinish(raw map[string]any) {
 	reason := ""
 	if part != nil {
 		reason, _ = part["reason"].(string)
+		id, _ := part["id"].(string)
+		if id == "" || !s.usageSteps[id] {
+			if s.usageSteps == nil {
+				s.usageSteps = map[string]bool{}
+			}
+			s.usageSteps[id] = true
+			data, _ := json.Marshal(part["tokens"])
+			var tokens struct {
+				Input, Output, Reasoning int
+				Cache                    struct{ Read, Write int }
+			}
+			if json.Unmarshal(data, &tokens) == nil {
+				s.turnUsage.Add(core.TokenUsage{InputTokens: tokens.Input, OutputTokens: tokens.Output + tokens.Reasoning,
+					ReasoningOutputTokens: tokens.Reasoning, CacheReadInputTokens: tokens.Cache.Read,
+					CacheCreationInputTokens: tokens.Cache.Write})
+			}
+		}
 	}
 	slog.Debug("opencodeSession: step finished", "reason", reason, "session_id", s.CurrentSessionID())
 
@@ -515,10 +558,20 @@ func (s *opencodeSession) sendEventResult() {
 	s.resultSent.Store(true)
 	sid := s.CurrentSessionID()
 	evt := core.Event{Type: core.EventResult, SessionID: sid, Done: true}
+	s.takeUsage(&evt)
 	select {
 	case s.events <- evt:
 	case <-s.ctx.Done():
 	}
+}
+
+// An error can be followed by the EOF fallback result. Drain the completed
+// requests once so failed turns retain their usage without billing it twice.
+func (s *opencodeSession) takeUsage(event *core.Event) {
+	s.turnUsage.Apply(event)
+	s.turnUsage = core.TokenUsage{}
+	event.Sidechain = s.sidechain.collect()
+	event.UsageIncomplete = s.sidechain.incomplete
 }
 
 // RespondPermission is a no-op — OpenCode handles permissions internally.

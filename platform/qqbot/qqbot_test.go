@@ -627,11 +627,11 @@ func TestSendWithButtons_GroupMessage(t *testing.T) {
 
 	buttons := [][]core.ButtonOption{
 		{
-			{Text: "允许", Data: "perm:allow"},
-			{Text: "拒绝", Data: "perm:deny"},
+			{Text: "允许", Data: "perm:prompt-current:allow"},
+			{Text: "拒绝", Data: "perm:prompt-current:deny"},
 		},
 		{
-			{Text: "允许所有", Data: "perm:allow_all"},
+			{Text: "允许所有", Data: "perm:prompt-current:allow_all"},
 		},
 	}
 
@@ -688,11 +688,11 @@ func TestSendWithButtons_GroupMessage(t *testing.T) {
 	if rd0["label"] != "允许" {
 		t.Errorf("allow button label = %v, want %q", rd0["label"], "允许")
 	}
-	if rd0["visited_label"] != "已允许" {
+	if rd0["visited_label"] != "已提交" {
 		t.Errorf("allow button visited_label = %v", rd0["visited_label"])
 	}
 	act0, _ := btn0["action"].(map[string]any)
-	if data, ok := act0["data"].(string); !ok || !strings.HasPrefix(data, "perm:allow:qqbot:group-1:user-1") {
+	if data, ok := act0["data"].(string); !ok || !strings.HasPrefix(data, "perm:prompt-current:allow:qqbot:group-1:user-1") {
 		t.Errorf("allow button_data = %v", act0["data"])
 	}
 	if act0["type"] != float64(1) {
@@ -708,14 +708,14 @@ func TestSendWithButtons_GroupMessage(t *testing.T) {
 	if rd1["label"] != "拒绝" {
 		t.Errorf("deny button label = %v", rd1["label"])
 	}
-	if rd1["visited_label"] != "已拒绝" {
+	if rd1["visited_label"] != "已提交" {
 		t.Errorf("deny button visited_label = %v", rd1["visited_label"])
 	}
 	if style, ok := rd1["style"].(float64); !ok || style != 0 {
 		t.Errorf("deny button style = %v, want 0 (grey)", style)
 	}
 	act1, _ := btn1["action"].(map[string]any)
-	if data, ok := act1["data"].(string); !ok || !strings.HasPrefix(data, "perm:deny:qqbot:group-1:user-1") {
+	if data, ok := act1["data"].(string); !ok || !strings.HasPrefix(data, "perm:prompt-current:deny:qqbot:group-1:user-1") {
 		t.Errorf("deny button_data = %v", act1["data"])
 	}
 
@@ -730,11 +730,11 @@ func TestSendWithButtons_GroupMessage(t *testing.T) {
 	if rd2["label"] != "允许所有" {
 		t.Errorf("allow_all button label = %v", rd2["label"])
 	}
-	if rd2["visited_label"] != "已始终允许" {
+	if rd2["visited_label"] != "已提交" {
 		t.Errorf("allow_all button visited_label = %v", rd2["visited_label"])
 	}
 	act2, _ := btn2["action"].(map[string]any)
-	if data, ok := act2["data"].(string); !ok || !strings.HasPrefix(data, "perm:allow_all:qqbot:group-1:user-1") {
+	if data, ok := act2["data"].(string); !ok || !strings.HasPrefix(data, "perm:prompt-current:allow_all:qqbot:group-1:user-1") {
 		t.Errorf("allow_all button_data = %v", act2["data"])
 	}
 }
@@ -767,7 +767,7 @@ func TestSendWithButtons_C2CMessage(t *testing.T) {
 	}
 
 	buttons := [][]core.ButtonOption{
-		{{Text: "允许", Data: "perm:allow"}},
+		{{Text: "允许", Data: "perm:prompt-current:allow"}},
 	}
 
 	err := p.SendWithButtons(context.Background(), rctx, "test", buttons)
@@ -784,8 +784,8 @@ func TestSendWithButtons_C2CMessage(t *testing.T) {
 	btn0 := btns0[0].(map[string]any)
 	act0 := btn0["action"].(map[string]any)
 
-	if data, ok := act0["data"].(string); !ok || !strings.HasPrefix(data, "perm:allow:qqbot:user-1") {
-		t.Errorf("C2C button_data = %v, want prefix perm:allow:qqbot:user-1", act0["data"])
+	if data, ok := act0["data"].(string); !ok || !strings.HasPrefix(data, "perm:prompt-current:allow:qqbot:user-1") {
+		t.Errorf("C2C button_data = %v, want prefix perm:prompt-current:allow:qqbot:user-1", act0["data"])
 	}
 }
 
@@ -824,7 +824,7 @@ func TestSendWithButtons_ShareSessionInChannel(t *testing.T) {
 	}
 
 	err := p.SendWithButtons(context.Background(), rctx, "test", [][]core.ButtonOption{
-		{{Text: "允许", Data: "perm:allow"}},
+		{{Text: "允许", Data: "perm:prompt-current:allow"}},
 	})
 	if err != nil {
 		t.Fatalf("SendWithButtons returned error: %v", err)
@@ -839,8 +839,8 @@ func TestSendWithButtons_ShareSessionInChannel(t *testing.T) {
 	act0 := btn0["action"].(map[string]any)
 
 	// Must use the shared session key from replyContext, not the default group key
-	if data, ok := act0["data"].(string); !ok || data != "perm:allow:qqbot:g:group-1" {
-		t.Errorf("button_data = %v, want perm:allow:qqbot:g:group-1", act0["data"])
+	if data, ok := act0["data"].(string); !ok || data != "perm:prompt-current:allow:qqbot:g:group-1" {
+		t.Errorf("button_data = %v, want perm:prompt-current:allow:qqbot:g:group-1", act0["data"])
 	}
 }
 
@@ -878,54 +878,54 @@ func TestHandleInteractionCreate_RouterPermission(t *testing.T) {
 	}{
 		{
 			name:        "group allow",
-			buttonData:  "perm:allow:qqbot:group-1:user-1",
+			buttonData:  "perm:prompt-current:allow:qqbot:group-1:user-1",
 			chatType:    1,
-			wantContent: "allow",
+			wantContent: "perm:prompt-current:allow",
 			wantSession: "qqbot:group-1:user-1",
 			wantMsgType: "group",
 			wantCall:    true,
 		},
 		{
 			name:        "group deny",
-			buttonData:  "perm:deny:qqbot:group-2:user-2",
+			buttonData:  "perm:prompt-current:deny:qqbot:group-2:user-2",
 			chatType:    1,
-			wantContent: "deny",
+			wantContent: "perm:prompt-current:deny",
 			wantSession: "qqbot:group-2:user-2",
 			wantMsgType: "group",
 			wantCall:    true,
 		},
 		{
 			name:        "group allow_all",
-			buttonData:  "perm:allow_all:qqbot:group-3:user-3",
+			buttonData:  "perm:prompt-current:allow_all:qqbot:group-3:user-3",
 			chatType:    1,
-			wantContent: "allow all",
+			wantContent: "perm:prompt-current:allow_all",
 			wantSession: "qqbot:group-3:user-3",
 			wantMsgType: "group",
 			wantCall:    true,
 		},
 		{
 			name:        "c2c allow",
-			buttonData:  "perm:allow:qqbot:user-1",
+			buttonData:  "perm:prompt-current:allow:qqbot:user-1",
 			chatType:    2,
-			wantContent: "allow",
+			wantContent: "perm:prompt-current:allow",
 			wantSession: "qqbot:user-1",
 			wantMsgType: "c2c",
 			wantCall:    true,
 		},
 		{
 			name:        "c2c deny",
-			buttonData:  "perm:deny:qqbot:user-2",
+			buttonData:  "perm:prompt-current:deny:qqbot:user-2",
 			chatType:    2,
-			wantContent: "deny",
+			wantContent: "perm:prompt-current:deny",
 			wantSession: "qqbot:user-2",
 			wantMsgType: "c2c",
 			wantCall:    true,
 		},
 		{
 			name:        "shared channel allow",
-			buttonData:  "perm:allow:qqbot:g:group-shared",
+			buttonData:  "perm:prompt-current:allow:qqbot:g:group-shared",
 			chatType:    1,
-			wantContent: "allow",
+			wantContent: "perm:prompt-current:allow",
 			wantSession: "qqbot:g:group-shared",
 			wantMsgType: "group",
 			wantCall:    true,
@@ -973,6 +973,18 @@ func TestHandleInteractionCreate_RouterPermission(t *testing.T) {
 						"button_id":   "b_0_0",
 					},
 				},
+			}
+			if tt.wantCall {
+				parts := strings.Split(tt.wantSession, ":")
+				if tt.chatType == 2 {
+					payload["user_openid"] = parts[1]
+				} else if len(parts) == 3 && parts[1] == "g" {
+					p.shareSessionInChannel = true
+					payload["group_openid"] = parts[2]
+				} else {
+					payload["group_openid"] = parts[1]
+					payload["group_member_openid"] = parts[2]
+				}
 			}
 			data, _ := json.Marshal(payload)
 			p.handleInteractionCreate(data)
@@ -1047,7 +1059,7 @@ func TestSendWithButtons_EmptyEventMsgID(t *testing.T) {
 		// eventMsgID is empty
 	}
 
-	err := p.SendWithButtons(context.Background(), rctx, "test", [][]core.ButtonOption{{{Text: "允许", Data: "perm:allow"}}})
+	err := p.SendWithButtons(context.Background(), rctx, "test", [][]core.ButtonOption{{{Text: "允许", Data: "perm:prompt-current:allow"}}})
 	if err != nil {
 		t.Fatalf("SendWithButtons returned error: %v", err)
 	}
@@ -1084,7 +1096,7 @@ func TestHandleInteractionCreate_Allow(t *testing.T) {
 		"data": map[string]any{
 			"type": 11,
 			"resolved": map[string]any{
-				"button_data": "perm:allow:qqbot:group-1:user-1",
+				"button_data": "perm:prompt-current:allow:qqbot:group-1:user-1",
 				"button_id":   "b_0_0",
 			},
 		},
@@ -1095,7 +1107,7 @@ func TestHandleInteractionCreate_Allow(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected synthetic message, got nil")
 	}
-	if got.Content != "allow" {
+	if got.Content != "perm:prompt-current:allow" {
 		t.Errorf("content = %q, want %q", got.Content, "allow")
 	}
 	if got.SessionKey != "qqbot:group-1:user-1" {
@@ -1140,7 +1152,7 @@ func TestHandleInteractionCreate_Deny(t *testing.T) {
 		"data": map[string]any{
 			"type": 11,
 			"resolved": map[string]any{
-				"button_data": "perm:deny:qqbot:user-1",
+				"button_data": "perm:prompt-current:deny:qqbot:user-1",
 				"button_id":   "b_0_1",
 			},
 		},
@@ -1151,7 +1163,7 @@ func TestHandleInteractionCreate_Deny(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected synthetic message, got nil")
 	}
-	if got.Content != "deny" {
+	if got.Content != "perm:prompt-current:deny" {
 		t.Errorf("content = %q, want %q", got.Content, "deny")
 	}
 	if got.SessionKey != "qqbot:user-1" {
@@ -1188,7 +1200,7 @@ func TestHandleInteractionCreate_AllowAll(t *testing.T) {
 		"data": map[string]any{
 			"type": 11,
 			"resolved": map[string]any{
-				"button_data": "perm:allow_all:qqbot:group-1:user-2",
+				"button_data": "perm:prompt-current:allow_all:qqbot:group-1:user-2",
 				"button_id":   "b_1_0",
 			},
 		},
@@ -1199,7 +1211,7 @@ func TestHandleInteractionCreate_AllowAll(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected synthetic message, got nil")
 	}
-	if got.Content != "allow all" {
+	if got.Content != "perm:prompt-current:allow_all" {
 		t.Errorf("content = %q, want %q", got.Content, "allow all")
 	}
 	if got.SessionKey != "qqbot:group-1:user-2" {
@@ -1277,7 +1289,7 @@ func TestHandleInteractionCreate_EmptyID(t *testing.T) {
 		"chat_type": 2,
 		"data": map[string]any{
 			"resolved": map[string]any{
-				"button_data": "perm:allow:qqbot:user-1",
+				"button_data": "perm:prompt-current:allow:qqbot:user-1",
 			},
 		},
 	}
@@ -1318,7 +1330,7 @@ func TestHandleInteractionCreate_ACKFailure(t *testing.T) {
 		"data": map[string]any{
 			"type": 11,
 			"resolved": map[string]any{
-				"button_data": "perm:allow:qqbot:user-1",
+				"button_data": "perm:prompt-current:allow:qqbot:user-1",
 				"button_id":   "b_0_0",
 			},
 		},
@@ -1330,7 +1342,7 @@ func TestHandleInteractionCreate_ACKFailure(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected synthetic message even when ACK fails")
 	}
-	if got.Content != "allow" {
+	if got.Content != "perm:prompt-current:allow" {
 		t.Errorf("content = %q, want %q", got.Content, "allow")
 	}
 }

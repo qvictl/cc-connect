@@ -69,7 +69,7 @@ func TestMergeForwardImagesUseOuterContainer(t *testing.T) {
 						switch {
 						case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
 							w.Header().Set("Content-Type", "application/json")
-							writeJSON(t, w, map[string]any{"code": 0, "expire": 7200, "tenant_access_token": "test-forward-image-token"})
+							writeJSON(t, w, map[string]any{"code": 0, "expire": 7200, "tenant_access_token": fixedTestTenantToken})
 						case r.URL.Path == "/open-apis/im/v1/messages/om_root":
 							w.Header().Set("Content-Type", "application/json")
 							writeJSON(t, w, map[string]any{"code": 0, "data": map[string]any{"items": items}})
@@ -111,8 +111,8 @@ func TestMergeForwardImagesUseOuterContainer(t *testing.T) {
 					}))
 					t.Cleanup(srv.Close)
 					p := newTestPlatformForDownload(srv.URL, 8*1024*1024, 512*1024*1024)
-					p.client = lark.NewClient("test-forward-image-client", "unused",
-						lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(srv.Client()))
+					p.client = lark.NewClient("cli_TEST_ONLY_FORWARD_IMAGE", fixedTestAppSecret,
+						lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)))
 					var text string
 					var images []core.ImageAttachment
 					if quoted {
@@ -121,8 +121,8 @@ func TestMergeForwardImagesUseOuterContainer(t *testing.T) {
 							t.Fatal("quoted forward context was dropped")
 						}
 						text, images = msg.text, msg.images
-						if len(msg.files) != 0 {
-							t.Errorf("quoted forward returned %d files, want none", len(msg.files))
+						if len(msg.files) != len(wantFiles) {
+							t.Errorf("quoted forward metadata = %d, want %d", len(msg.files), len(wantFiles))
 						}
 					} else {
 						var files []core.FileAttachment

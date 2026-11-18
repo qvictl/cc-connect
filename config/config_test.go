@@ -535,7 +535,7 @@ func TestValidateProjectDisplayConfig(t *testing.T) {
 		{
 			name:    "invalid project display mode",
 			display: &DisplayConfig{Mode: &mode},
-			wantErr: `projects[0].display.mode must be "full", "compact", or "quiet"`,
+			wantErr: `projects[0].display.mode must be "full", "compact", "quiet", or "final"`,
 		},
 		{
 			name:    "invalid project card mode",
@@ -3691,5 +3691,125 @@ func TestRemoveGlobalProvider_CleansUpProviderRefs(t *testing.T) {
 	refs2 := cfg.Projects[1].Agent.ProviderRefs
 	if len(refs2) != 0 {
 		t.Errorf("proj2 provider_refs: want [], got %v", refs2)
+	}
+}
+
+func TestEffectiveCommentaryMessages(t *testing.T) {
+	for _, global := range []string{"absent", "false", "true"} {
+		for _, project := range []string{"absent", "empty", "false", "true"} {
+			t.Run(global+"/project="+project, func(t *testing.T) {
+				raw := ""
+				if global != "absent" {
+					raw = "[display]\ncommentary_messages = " + global + "\n"
+				}
+				raw += "[[projects]]\nname = \"test\"\n"
+				if project != "absent" {
+					raw += "[projects.display]\n"
+					if project != "empty" {
+						raw += "commentary_messages = " + project + "\n"
+					}
+				}
+				var cfg Config
+				if _, err := toml.Decode(raw, &cfg); err != nil {
+					t.Fatal(err)
+				}
+				if got := EffectiveCommentaryMessages(&cfg, nil); got != (global == "true") {
+					t.Fatalf("global effective = %v, raw = %s", got, global)
+				}
+				want := global == "true"
+				if project == "false" || project == "true" {
+					want = project == "true"
+				}
+				if got := EffectiveCommentaryMessages(&cfg, &cfg.Projects[0]); got != want {
+					t.Fatalf("project effective = %v, want %v", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateBusyAction(t *testing.T) {
+	for _, v := range []string{"", "queue", "inject", " Inject "} {
+		cfg := Config{Projects: []ProjectConfig{validProject("demo")}}
+		cfg.Projects[0].BusyAction = v
+		if err := cfg.validate(); err != nil {
+			t.Fatalf("busy_action %q: validate() = %v, want nil", v, err)
+		}
+	}
+	cfg := Config{Projects: []ProjectConfig{validProject("demo")}}
+	cfg.Projects[0].BusyAction = "drop"
+	assertErrContains(t, cfg.validate(), `projects[0].busy_action must be "queue" or "inject"`)
+}
+
+func TestGetProjectConfigDetails_BusyAction(t *testing.T) {
+	configPath := writeConfigFixture(t, strings.Replace(feishuConfigFixture, "name = \"alpha\"", "name = \"alpha\"\nbusy_action = \"inject\"", 1))
+	patchConfigPath(t, configPath)
+	details := GetProjectConfigDetails("alpha")
+	if details == nil || details["busy_action"] != "inject" {
+		t.Fatalf("busy_action = %v, want inject", details["busy_action"])
+	}
+}
+
+// A [[commands]] entry may set quiet; it defaults to false.
+func TestCommandConfig_Quiet(t *testing.T) {
+	raw := `
+[[commands]]
+name = "deploy"
+exec = "./deploy.sh {{args}}"
+quiet = true
+
+[[commands]]
+name = "status"
+exec = "git status"
+`
+	var cfg Config
+	if _, err := toml.Decode(raw, &cfg); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if len(cfg.Commands) != 2 || !cfg.Commands[0].Quiet || cfg.Commands[1].Quiet {
+		t.Fatalf("commands = %+v", cfg.Commands)
+	}
+}
+
+func TestSaveGlobalSettings_CommentaryMessagesReload(t *testing.T) {
+	path := writeConfigFixture(t, "language = \"en\"\n")
+	patchConfigPath(t, path)
+
+	settings := GetGlobalSettings()
+	if settings["commentary_messages"] != false {
+		t.Fatalf("absent commentary_messages = %v, want false", settings["commentary_messages"])
+	}
+	if EffectiveCommentaryMessages(readConfigFixture(t, path), nil) {
+		t.Fatal("absent config must resolve false before save")
+	}
+
+	yes := true
+	if err := SaveGlobalSettings(GlobalSettingsUpdate{CommentaryMessages: &yes}); err != nil {
+		t.Fatalf("SaveGlobalSettings(true): %v", err)
+	}
+	cfg := readConfigFixture(t, path)
+	if cfg.Display.CommentaryMessages == nil || !*cfg.Display.CommentaryMessages {
+		t.Fatalf("persisted commentary_messages = %v, want true", cfg.Display.CommentaryMessages)
+	}
+	if !EffectiveCommentaryMessages(cfg, nil) {
+		t.Fatal("reloaded config must resolve true after save")
+	}
+	if GetGlobalSettings()["commentary_messages"] != true {
+		t.Fatalf("GetGlobalSettings after save = %v, want true", GetGlobalSettings()["commentary_messages"])
+	}
+
+	no := false
+	if err := SaveGlobalSettings(GlobalSettingsUpdate{CommentaryMessages: &no}); err != nil {
+		t.Fatalf("SaveGlobalSettings(false): %v", err)
+	}
+	cfg = readConfigFixture(t, path)
+	if cfg.Display.CommentaryMessages == nil || *cfg.Display.CommentaryMessages {
+		t.Fatalf("persisted commentary_messages = %v, want false", cfg.Display.CommentaryMessages)
+	}
+	if EffectiveCommentaryMessages(cfg, nil) {
+		t.Fatal("reloaded config must resolve false after save")
+	}
+	if GetGlobalSettings()["commentary_messages"] != false {
+		t.Fatalf("GetGlobalSettings after false save = %v, want false", GetGlobalSettings()["commentary_messages"])
 	}
 }

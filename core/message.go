@@ -443,13 +443,9 @@ type Message struct {
 	// drop late redeliveries that reuse a new message_id but an older create_time
 	// than a message already processed. Zero means unset (no ordering hint).
 	UserMessageTimeMs int64
-	// CardAnswerRendered is set by platforms whose card/button callback both
-	// forwards the answer and replaces the original card with the rendered
-	// result in the callback response (e.g. Feishu askq: option clicks and
-	// askq_text form submits). The engine then skips the "✅ question: answer"
-	// chat echo, which would otherwise duplicate a result the user can already
-	// see in the card. Plain-text answers and platforms without in-place card
-	// updates leave it false and keep the echo.
+
+	// CardAnswerRendered marks askq option callbacks whose platform returns
+	// an in-place answer card. It does not establish authorization or receipt.
 	CardAnswerRendered bool
 }
 
@@ -457,6 +453,7 @@ type Message struct {
 type EventType string
 
 const (
+	EventCommentary        EventType = "commentary"         // complete user-facing update, delivered apart from progress cards
 	EventText              EventType = "text"               // intermediate or final text
 	EventHookRejected      EventType = "hook_rejected"      // Stop hook rejected prior assistant text
 	EventToolUse           EventType = "tool_use"           // tool invocation info
@@ -467,6 +464,9 @@ const (
 	EventUserInputRequest  EventType = "user_input_request" // non-blocking question; answer is a user message
 	EventThinking          EventType = "thinking"           // thinking/processing status
 	EventModelSwitch       EventType = "model_switch"       // agent CLI moved the turn to another model on its own (see ModelSwitch)
+	EventSubagent          EventType = "subagent"           // a subagent started, made progress or finished (see Event.Subagent)
+	EventCompact           EventType = "compact"            // agent compacted its context; not the end of the turn (details in Metadata)
+	EventGoal              EventType = "goal"               // native persisted goal changed
 )
 
 // ModelSwitch describes a model change the agent CLI made without being asked
@@ -487,6 +487,35 @@ type ModelSwitch struct {
 	SessionWide bool
 }
 
+// SubagentPhase is where a subagent is in its life.
+type SubagentPhase string
+
+const (
+	SubagentStarted  SubagentPhase = "started"  // spawned, or woken again by a notification
+	SubagentStep     SubagentPhase = "step"     // said, thought or called something
+	SubagentFinished SubagentPhase = "finished" // ended; Status says how
+)
+
+// SubagentEvent describes one subagent's activity. Subagents run beside the
+// turn that spawned them, often past its end, so they are shown apart from
+// the turn: each one gets its own progress card, keyed by ID.
+type SubagentEvent struct {
+	ID         string // the tool call that spawned the subagent
+	Phase      SubagentPhase
+	Title      string            // what it was asked to do (started)
+	Kind       string            // its type, e.g. "general-purpose" (started)
+	Background bool              // runs past the spawning turn (started)
+	Prompt     string            // its task (started)
+	Step       ProgressCardEntry // what it did (step)
+	Status     string            // completed, failed, ... (finished)
+	Summary    string            // its final report (finished)
+}
+
+// MetaParentToolUseID is the Event.Metadata key an agent sets on events its
+// subagent produced; the value is the id of the tool call that spawned the
+// subagent. Such events are progress of that call, not the turn's own steps.
+const MetaParentToolUseID = "parent_tool_use_id"
+
 // UserQuestion represents a structured question from AskUserQuestion.
 type UserQuestion struct {
 	Question    string               `json:"question"`
@@ -503,9 +532,11 @@ type UserQuestionOption struct {
 
 // Event represents a single piece of agent output streamed back to the engine.
 type Event struct {
+	Goal                     *Goal // EventGoal; nil means cleared
 	Type                     EventType
 	Content                  string
 	ToolName                 string         // populated for EventToolUse, EventPermissionRequest
+	ToolCallID               string         // protocol ID shared by tool start and result events
 	ToolInput                string         // human-readable summary of tool input
 	ToolInputRaw             map[string]any // raw tool input (for EventPermissionRequest, used in allow response)
 	ToolResult               string         // populated for EventToolResult
@@ -519,11 +550,30 @@ type Event struct {
 	Error                    error
 	InputTokens              int // token usage from agent result events
 	OutputTokens             int
-	CacheCreationInputTokens int            // cache-write tokens (new content written to cache)
-	CacheReadInputTokens     int            // cache-read tokens (prior context retrieved from cache)
+	CacheCreationInputTokens int // cache-write tokens (new content written to cache)
+	CacheReadInputTokens     int // cache-read tokens (prior context retrieved from cache)
+	ReasoningOutputTokens    int
+	Sidechain                *SidechainUsage
+	UsageIncomplete          bool
+	Subagent                 *SubagentEvent // populated for EventSubagent
 	Metadata                 map[string]any // optional metadata from agent (e.g. compaction_continue)
 	Synthetic                bool           // true if this is a synthetic/generated message (not from real user)
 	ModelSwitch              *ModelSwitch   // populated for EventModelSwitch
+}
+
+// SidechainUsage is what an agent's subagents (Claude Code Agent tool calls
+// and dynamic-workflow agents) consumed since the previous turn. It is kept
+// apart from the turn's own token fields, which also drive the context
+// indicator: subagents run in their own context windows.
+type SidechainUsage struct {
+	Requests                 int
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+	ReasoningOutputTokens    int
+	Models                   []string // models the subagents ran on, sorted
+	ByModel                  map[string]TokenUsage
 }
 
 // HistoryEntry is one turn in a conversation.

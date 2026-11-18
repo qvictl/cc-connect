@@ -19,7 +19,7 @@ import (
 // message with the thumbnail and a note.
 func TestDispatchMessageMediaDownloadsVideo(t *testing.T) {
 	const appID = "cli_media_video"
-	const appSecret = "secret-media-video"
+	const appSecret = fixedTestAppSecret
 	const currentUser = "ou_alice"
 	const fileKey = "file_v3_video"
 	const imageKey = "img_v3_cover"
@@ -40,7 +40,7 @@ func TestDispatchMessageMediaDownloadsVideo(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case strings.HasPrefix(r.URL.Path, "/open-apis/im/v1/messages/") && strings.HasSuffix(r.URL.Path, "/resources/"+imageKey):
 			if got := r.URL.Query().Get("type"); got != "image" {
@@ -80,8 +80,12 @@ func TestDispatchMessageMediaDownloadsVideo(t *testing.T) {
 			appSecret:    appSecret,
 			handler:      handler,
 			client: lark.NewClient(appID, appSecret,
-				lark.WithOpenBaseUrl(srv.URL),
-				lark.WithHttpClient(srv.Client()),
+				lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+				lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+			),
+			replayClient: lark.NewClient(appID, appSecret,
+				lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+				lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 			),
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -92,7 +93,7 @@ func TestDispatchMessageDropsRecalledMessageBeforeHandler(t *testing.T) {
 
 func TestDispatchMessageIncludesQuotedImage(t *testing.T) {
 	const appID = "cli_quote_image"
-	const appSecret = "secret-quote-image"
+	const appSecret = fixedTestAppSecret
 	const parentMessageID = "om_parent_image"
 	const imageKey = "img_parent"
 
@@ -126,7 +127,7 @@ func TestDispatchMessageIncludesQuotedImage(t *testing.T) {
 						"code":                0,
 						"msg":                 "success",
 						"expire":              7200,
-						"tenant_access_token": "tenant-token",
+						"tenant_access_token": fixedTestTenantToken,
 					})
 				case r.URL.Path == "/open-apis/im/v1/messages/"+parentMessageID:
 					w.Header().Set("Content-Type", "application/json")
@@ -169,8 +170,12 @@ func TestDispatchMessageIncludesQuotedImage(t *testing.T) {
 				appID:        appID,
 				appSecret:    appSecret,
 				client: lark.NewClient(appID, appSecret,
-					lark.WithOpenBaseUrl(srv.URL),
-					lark.WithHttpClient(srv.Client()),
+					lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+					lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+				),
+				replayClient: lark.NewClient(appID, appSecret,
+					lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+					lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 				),
 				handler: func(_ core.Platform, msg *core.Message) {
 					got <- msg
@@ -214,7 +219,7 @@ func TestDispatchMessageIncludesQuotedImage(t *testing.T) {
 
 func TestDispatchMessageKeepsMentionOnlyQuotedText(t *testing.T) {
 	const appID = "cli_quote_text"
-	const appSecret = "secret-quote-text"
+	const appSecret = fixedTestAppSecret
 	const parentMessageID = "om_parent_text"
 
 	got := make(chan *core.Message, 1)
@@ -226,7 +231,7 @@ func TestDispatchMessageKeepsMentionOnlyQuotedText(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case r.URL.Path == "/open-apis/im/v1/messages/"+parentMessageID:
 			w.Header().Set("Content-Type", "application/json")
@@ -268,8 +273,12 @@ func TestDispatchMessageKeepsMentionOnlyQuotedText(t *testing.T) {
 		appSecret:    appSecret,
 		botOpenID:    "ou_bot",
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(_ core.Platform, msg *core.Message) {
 			got <- msg
@@ -312,7 +321,7 @@ func TestDispatchMessageKeepsMentionOnlyQuotedText(t *testing.T) {
 func TestOnMessageThreadIsolationBootstrapsExistingThreadContext(t *testing.T) {
 	const (
 		appID        = "cli_thread_bootstrap"
-		appSecret    = "secret-thread-bootstrap"
+		appSecret    = fixedTestAppSecret
 		botOpenID    = "ou_bot"
 		userOpenID   = "ou_user"
 		chatID       = "oc_chat"
@@ -329,7 +338,7 @@ func TestOnMessageThreadIsolationBootstrapsExistingThreadContext(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case r.URL.Path == "/open-apis/im/v1/messages/"+rootMsgID:
 			writeJSON(t, w, map[string]any{
@@ -370,8 +379,12 @@ func TestOnMessageThreadIsolationBootstrapsExistingThreadContext(t *testing.T) {
 		threadIsolation: true,
 		dedup:           &core.MessageDedup{},
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(_ core.Platform, msg *core.Message) {
 			got <- msg
@@ -440,7 +453,7 @@ func TestOnMessageThreadIsolationBootstrapsExistingThreadContext(t *testing.T) {
 // emits "[merge_forward]", the agent never sees the forwarded content.
 func TestDispatchMessageExpandsQuotedMergeForward(t *testing.T) {
 	const appID = "cli_quote_merge_forward"
-	const appSecret = "secret-quote-merge-forward"
+	const appSecret = fixedTestAppSecret
 	const parentMessageID = "om_parent_merge_forward"
 	const subMessageID = "om_sub_liangchen"
 
@@ -453,7 +466,7 @@ func TestDispatchMessageExpandsQuotedMergeForward(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case r.URL.Path == "/open-apis/im/v1/messages/"+parentMessageID:
 			// Get-message for a merge_forward root returns the root plus
@@ -466,11 +479,11 @@ func TestDispatchMessageExpandsQuotedMergeForward(t *testing.T) {
 				"data": map[string]any{
 					"items": []map[string]any{
 						{
-							"message_id":        subMessageID,
-							"msg_type":          "text",
-							"upper_message_id":  parentMessageID,
-							"parent_id":         "",
-							"create_time":       "1786522200000",
+							"message_id":       subMessageID,
+							"msg_type":         "text",
+							"upper_message_id": parentMessageID,
+							"parent_id":        "",
+							"create_time":      "1786522200000",
 							"sender": map[string]any{
 								"id":          "ou_liangchen",
 								"id_type":     "open_id",
@@ -526,8 +539,12 @@ func TestDispatchMessageExpandsQuotedMergeForward(t *testing.T) {
 		appSecret:    appSecret,
 		botOpenID:    "ou_bot",
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(_ core.Platform, msg *core.Message) {
 			got <- msg
@@ -570,7 +587,7 @@ func TestDispatchMessageExpandsQuotedMergeForward(t *testing.T) {
 
 func TestOnMessageRepliesToUnauthorizedMention(t *testing.T) {
 	const appID = "cli_unauthorized"
-	const appSecret = "secret-unauthorized"
+	const appSecret = fixedTestAppSecret
 	const botOpenID = "ou_bot"
 	const userOpenID = "ou_blocked"
 
@@ -583,7 +600,7 @@ func TestOnMessageRepliesToUnauthorizedMention(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case strings.HasSuffix(r.URL.Path, "/reply"):
 			body, err := io.ReadAll(r.Body)
@@ -611,8 +628,12 @@ func TestOnMessageRepliesToUnauthorizedMention(t *testing.T) {
 		botOpenID:    botOpenID,
 		dedup:        &core.MessageDedup{},
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(core.Platform, *core.Message) {
 			t.Fatal("handler should not run for unauthorized sender")
@@ -663,7 +684,7 @@ func TestOnMessageRepliesToUnauthorizedMention(t *testing.T) {
 
 func TestOnMessageDropsUnauthorizedOverheardGroupMessage(t *testing.T) {
 	const appID = "cli_unauthorized_silent"
-	const appSecret = "secret-unauthorized-silent"
+	const appSecret = fixedTestAppSecret
 	const botOpenID = "ou_bot"
 	const userOpenID = "ou_blocked"
 
@@ -676,7 +697,7 @@ func TestOnMessageDropsUnauthorizedOverheardGroupMessage(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case strings.HasSuffix(r.URL.Path, "/reply"):
 			body, err := io.ReadAll(r.Body)
@@ -705,8 +726,12 @@ func TestOnMessageDropsUnauthorizedOverheardGroupMessage(t *testing.T) {
 		groupReplyAll: true,
 		dedup:         &core.MessageDedup{},
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(core.Platform, *core.Message) {
 			t.Fatal("handler should not run for unauthorized sender")
@@ -755,7 +780,7 @@ func TestOnMessageDropsUnauthorizedOverheardGroupMessage(t *testing.T) {
 // that chat and answer it normally.
 func TestOnMessageSilentForOutOfScopeUnauthorizedSender(t *testing.T) {
 	const appID = "cli_out_of_scope"
-	const appSecret = "secret-out-of-scope"
+	const appSecret = fixedTestAppSecret
 	const botOpenID = "ou_bot"
 
 	cases := []struct {
@@ -778,7 +803,7 @@ func TestOnMessageSilentForOutOfScopeUnauthorizedSender(t *testing.T) {
 						"code":                0,
 						"msg":                 "success",
 						"expire":              7200,
-						"tenant_access_token": "tenant-token",
+						"tenant_access_token": fixedTestTenantToken,
 					})
 					return
 				}
@@ -798,8 +823,8 @@ func TestOnMessageSilentForOutOfScopeUnauthorizedSender(t *testing.T) {
 				botOpenID:    botOpenID,
 				dedup:        &core.MessageDedup{},
 				client: lark.NewClient(appID, appSecret,
-					lark.WithOpenBaseUrl(srv.URL),
-					lark.WithHttpClient(srv.Client()),
+					lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+					lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 				),
 				handler: func(core.Platform, *core.Message) {
 					t.Error("handler should not run for out-of-scope message")
@@ -848,7 +873,7 @@ func TestOnMessageSilentForOutOfScopeUnauthorizedSender(t *testing.T) {
 
 func TestIsMessageRecalledDetectsWithdrawnMessageFromGetAPI(t *testing.T) {
 	const appID = "cli_recall_probe"
-	const appSecret = "secret-recall-probe"
+	const appSecret = fixedTestAppSecret
 
 	getCalls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -859,7 +884,7 @@ func TestIsMessageRecalledDetectsWithdrawnMessageFromGetAPI(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case "/open-apis/im/v1/messages/om_withdrawn":
 			getCalls++
@@ -879,13 +904,13 @@ func TestIsMessageRecalledDetectsWithdrawnMessageFromGetAPI(t *testing.T) {
 		appID:        appID,
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		replayClient: lark.NewClient(appID, appSecret,
 			lark.WithEnableTokenCache(false),
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 	}
 
@@ -906,7 +931,7 @@ func TestIsMessageRecalledDetectsWithdrawnMessageFromGetAPI(t *testing.T) {
 
 func TestIsMessageRecalledDetectsDeletedMessageItem(t *testing.T) {
 	const appID = "cli_recall_probe"
-	const appSecret = "secret-recall-probe"
+	const appSecret = fixedTestAppSecret
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -916,7 +941,7 @@ func TestIsMessageRecalledDetectsDeletedMessageItem(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case "/open-apis/im/v1/messages/om_deleted":
 			writeJSON(t, w, map[string]any{
@@ -943,13 +968,13 @@ func TestIsMessageRecalledDetectsDeletedMessageItem(t *testing.T) {
 		appID:        appID,
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		replayClient: lark.NewClient(appID, appSecret,
 			lark.WithEnableTokenCache(false),
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 	}
 
@@ -1492,28 +1517,6 @@ func TestResolveBotSenderName_NilMap(t *testing.T) {
 	}
 }
 
-func TestIsAttachmentMsgType(t *testing.T) {
-	tests := []struct {
-		msgType string
-		want    bool
-	}{
-		{"image", true},
-		{"file", true},
-		{"audio", true},
-		{"media", true},
-		{"text", false},
-		{"post", false},
-		{"sticker", false},
-		{"merge_forward", false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		if got := isAttachmentMsgType(tt.msgType); got != tt.want {
-			t.Errorf("isAttachmentMsgType(%q) = %v, want %v", tt.msgType, got, tt.want)
-		}
-	}
-}
-
 func TestMarkAndIsActiveThreadSession(t *testing.T) {
 	const threadKey = "feishu:oc_chat:root:om_root"
 	const directKey = "feishu:oc_chat:ou_user"
@@ -1555,14 +1558,9 @@ func TestMarkAndIsActiveThreadSession(t *testing.T) {
 	})
 }
 
-// TestOnMessageThreadIsolationAdmitsAttachmentWithoutMention covers the fix
-// for the case where a user @mentions the bot in a thread, then drops follow-up
-// images into the same thread without re-mentioning. Pre-fix, those images
-// were silently dropped by the group @bot filter; post-fix they should pass
-// through and be dispatched.
-func TestOnMessageThreadIsolationAdmitsAttachmentWithoutMention(t *testing.T) {
+func TestOnMessageThreadIsolationRequiresMentionForAttachments(t *testing.T) {
 	const appID = "cli_thread_admit"
-	const appSecret = "secret-thread-admit"
+	const appSecret = fixedTestAppSecret
 	const botOpenID = "ou_bot"
 	const userOpenID = "ou_user"
 	const chatID = "oc_chat"
@@ -1579,13 +1577,18 @@ func TestOnMessageThreadIsolationAdmitsAttachmentWithoutMention(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
-		case strings.HasSuffix(r.URL.Path, "/resources/"+imageKey):
+		case strings.Contains(r.URL.Path, "/resources/"):
 			w.Header().Set("Content-Type", "image/png")
 			if _, err := w.Write(imageBytes); err != nil {
 				t.Fatalf("write image: %v", err)
 			}
+		case r.URL.Path == "/open-apis/im/v1/chats/"+chatID:
+			w.Header().Set("Content-Type", "application/json")
+			writeJSON(t, w, map[string]any{"code": 0, "data": map[string]any{
+				"name": "multi-person group", "user_count": "2", "bot_count": "1",
+			}})
 		default:
 			// Unknown calls (e.g. user/chat info lookups) return empty success
 			// so dispatch can continue past optional metadata fetches.
@@ -1605,8 +1608,12 @@ func TestOnMessageThreadIsolationAdmitsAttachmentWithoutMention(t *testing.T) {
 		threadIsolation: true,
 		dedup:           &core.MessageDedup{},
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(_ core.Platform, msg *core.Message) {
 			received <- msg
@@ -1668,21 +1675,30 @@ func TestOnMessageThreadIsolationAdmitsAttachmentWithoutMention(t *testing.T) {
 		t.Fatal("timed out waiting for the opening @bot text to dispatch")
 	}
 
-	// Step 2: follow-up image in the same thread, no @mention — should pass through.
+	// Step 2: an active group thread does not waive the mention requirement.
 	imgContent := `{"image_key":"` + imageKey + `"}`
-	if err := p.onMessage(context.Background(), buildEvent("om_thread_img", "image", imgContent, nil, rootMsgID)); err != nil {
-		t.Fatalf("onMessage(image in thread) error = %v", err)
+	messages := []struct {
+		msgType string
+		content string
+	}{
+		{"image", imgContent},
+		{"file", `{"file_key":"file_in_thread","file_name":"report.txt"}`},
+		{"audio", `{"file_key":"audio_in_thread","duration":1000}`},
+		{"media", `{"file_key":"video_in_thread","file_name":"clip.mp4","image_key":"` + imageKey + `"}`},
+		{"text", `{"text":"follow-up"}`},
+		{"post", `{"title":"","content":[[{"tag":"text","text":"follow-up"}]]}`},
 	}
-	select {
-	case msg := <-received:
-		if msg.MessageID != "om_thread_img" {
-			t.Fatalf("expected dispatched image om_thread_img, got %q", msg.MessageID)
-		}
-		if len(msg.Images) != 1 {
-			t.Fatalf("expected dispatched image to carry 1 attachment, got %d", len(msg.Images))
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected image in active thread to be dispatched without @mention")
+	for _, message := range messages {
+		t.Run("group_without_mention/"+message.msgType, func(t *testing.T) {
+			if err := p.onMessage(context.Background(), buildEvent("om_unmentioned_"+message.msgType, message.msgType, message.content, nil, rootMsgID)); err != nil {
+				t.Fatalf("onMessage() error = %v", err)
+			}
+			select {
+			case msg := <-received:
+				t.Fatalf("unmentioned group message should be dropped, got %q", msg.MessageID)
+			case <-time.After(time.Second):
+			}
+		})
 	}
 
 	// Step 3: image in a *different* thread without @mention — should still be dropped.
@@ -1692,21 +1708,74 @@ func TestOnMessageThreadIsolationAdmitsAttachmentWithoutMention(t *testing.T) {
 	select {
 	case msg := <-received:
 		t.Fatalf("image in unrelated thread should be dropped, but handler received %q", msg.MessageID)
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(time.Second):
 		// expected: nothing dispatched
 	}
 
-	// Step 4: text without @mention in the active thread — should be dropped
-	// (only attachments are admitted; otherwise unrelated thread chatter would
-	// flood the agent).
-	if err := p.onMessage(context.Background(), buildEvent("om_thread_text", "text", `{"text":"刚才那张图能看到吗"}`, nil, rootMsgID)); err != nil {
-		t.Fatalf("onMessage(text in thread without mention) error = %v", err)
+	// Step 4: mentioning somebody else in the active thread is not enough.
+	otherMention := []*larkim.MentionEvent{{
+		Key: stringPtr("@_user_2"), Id: &larkim.UserId{OpenId: stringPtr("ou_other")},
+		Name: stringPtr("another user"),
+	}}
+	if err := p.onMessage(context.Background(), buildEvent("om_other_mention_img", "image", imgContent, otherMention, rootMsgID)); err != nil {
+		t.Fatalf("onMessage(image mentioning another user) error = %v", err)
 	}
 	select {
 	case msg := <-received:
-		t.Fatalf("text in active thread without @mention should be dropped, got %q", msg.MessageID)
-	case <-time.After(300 * time.Millisecond):
-		// expected
+		t.Fatalf("image mentioning another user should be dropped, got %q", msg.MessageID)
+	case <-time.After(time.Second):
+	}
+
+	// Explicit mentions, P2P chats and group reply-all remain separate ways
+	// to admit all four attachment types, as well as text and rich-text posts.
+	for _, mode := range []string{"group_with_mention", "p2p_without_mention", "group_reply_all_without_mention"} {
+		for _, message := range messages {
+			t.Run(mode+"/"+message.msgType, func(t *testing.T) {
+				chatType = "group"
+				p.groupReplyAll = false
+				mentions := botMention
+				rootID := rootMsgID
+				if mode == "p2p_without_mention" {
+					chatType = "p2p"
+					mentions = nil
+					rootID = ""
+				}
+				if mode == "group_reply_all_without_mention" {
+					p.groupReplyAll = true
+					mentions = nil
+				}
+				messageID := "om_" + mode + "_" + message.msgType
+				if err := p.onMessage(context.Background(), buildEvent(messageID, message.msgType, message.content, mentions, rootID)); err != nil {
+					t.Fatalf("onMessage() error = %v", err)
+				}
+				select {
+				case msg := <-received:
+					if msg.MessageID != messageID {
+						t.Fatalf("MessageID = %q, want %q", msg.MessageID, messageID)
+					}
+					switch message.msgType {
+					case "image", "media":
+						if len(msg.Images) != 1 || string(msg.Images[0].Data) != string(imageBytes) {
+							t.Fatalf("expected downloaded image, got %+v", msg.Images)
+						}
+					case "file":
+						if len(msg.Files) != 1 || msg.Files[0].FileName != "report.txt" || string(msg.Files[0].Data) != string(imageBytes) {
+							t.Fatalf("expected downloaded report.txt, got %+v", msg.Files)
+						}
+					case "audio":
+						if msg.Audio == nil || string(msg.Audio.Data) != string(imageBytes) {
+							t.Fatalf("expected downloaded audio, got %+v", msg.Audio)
+						}
+					case "text", "post":
+						if msg.Content != "follow-up" {
+							t.Fatalf("Content = %q, want follow-up", msg.Content)
+						}
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for accepted message to dispatch")
+				}
+			})
+		}
 	}
 }
 
@@ -1726,7 +1795,7 @@ func TestNewPlatform_RequireMentionFalseAliasesGroupReplyAll(t *testing.T) {
 	// group messages without @mention are NOT silently dropped.
 	p, err := newPlatform("feishu", lark.FeishuBaseUrl, map[string]any{
 		"app_id":          "cli_test",
-		"app_secret":      "secret",
+		"app_secret":      fixedTestAppSecret,
 		"require_mention": false,
 	})
 	if err != nil {
@@ -1745,7 +1814,7 @@ func TestNewPlatform_RequireMentionTrueDoesNotForceGroupReplyAll(t *testing.T) {
 	// require_mention = true (the default) must NOT set groupReplyAll.
 	p, err := newPlatform("feishu", lark.FeishuBaseUrl, map[string]any{
 		"app_id":          "cli_test",
-		"app_secret":      "secret",
+		"app_secret":      fixedTestAppSecret,
 		"require_mention": true,
 	})
 	if err != nil {
@@ -1817,7 +1886,7 @@ func TestOnMessageSkipWhenMentionOthers(t *testing.T) {
 					defer srv.Close()
 					opts := map[string]any{
 						"app_id":                   "cli_skip_mentions",
-						"app_secret":               "test-secret",
+						"app_secret":               fixedTestAppSecret,
 						"group_reply_all":          cfg.all,
 						"skip_when_mention_others": cfg.skip,
 					}
@@ -1835,8 +1904,7 @@ func TestOnMessageSkipWhenMentionOthers(t *testing.T) {
 					if p == nil {
 						t.Fatal("expected a Feishu platform")
 					}
-					p.client = lark.NewClient("cli_skip_mentions", "test-secret",
-						lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(srv.Client()))
+					bindFixturePlatform(t, p, srv.URL)
 					if !cfg.unknownBot {
 						p.botOpenID = "ou_bot"
 					}
@@ -2055,7 +2123,7 @@ func TestResolveMentions_MarkdownForcesTextFormat(t *testing.T) {
 // to plain Send — the interactive card must be preserved.
 func TestSendWithStatusFooter_NoFallbackOnNonMentionAt(t *testing.T) {
 	const appID = "cli_footer_at"
-	const appSecret = "secret"
+	const appSecret = fixedTestAppSecret
 	const chatID = "oc_test_group"
 
 	var gotMsgType string
@@ -2064,7 +2132,7 @@ func TestSendWithStatusFooter_NoFallbackOnNonMentionAt(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
-			writeJSON(t, w, map[string]any{"code": 0, "expire": 7200, "tenant_access_token": "t"})
+			writeJSON(t, w, map[string]any{"code": 0, "expire": 7200, "tenant_access_token": fixedTestTenantToken})
 		case r.URL.Path == "/open-apis/im/v1/messages" && r.Method == http.MethodPost:
 			body, _ := io.ReadAll(r.Body)
 			var req struct {
@@ -2090,8 +2158,8 @@ func TestSendWithStatusFooter_NoFallbackOnNonMentionAt(t *testing.T) {
 		appSecret:       appSecret,
 		resolveMentions: true,
 		mentionMap:      map[string]string{"BotA": "ou_bot_openid"},
-		client:          lark.NewClient(appID, appSecret, lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(srv.Client())),
-		replayClient:    lark.NewClient(appID, appSecret, lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(srv.Client())),
+		client:          lark.NewClient(appID, appSecret, lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(fixtureHTTPClient(t, srv.URL))),
+		replayClient:    lark.NewClient(appID, appSecret, lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(fixtureHTTPClient(t, srv.URL))),
 	}
 	p.chatMemberCache.Store(chatID, &chatMemberEntry{members: map[string]string{"BotA": "ou_bot_openid"}, fetchedAt: time.Now()})
 
@@ -2124,7 +2192,7 @@ func TestNewPlatform_ImageBatchWindow(t *testing.T) {
 	// Default: 500ms when option omitted.
 	p, err := newPlatform("feishu", lark.FeishuBaseUrl, map[string]any{
 		"app_id":     "cli_test",
-		"app_secret": "secret",
+		"app_secret": fixedTestAppSecret,
 	})
 	if err != nil {
 		t.Fatalf("newPlatform error: %v", err)
@@ -2140,7 +2208,7 @@ func TestNewPlatform_ImageBatchWindow(t *testing.T) {
 	// Custom value (int64, mirrors how TOML decodes integers).
 	p, err = newPlatform("feishu", lark.FeishuBaseUrl, map[string]any{
 		"app_id":                "cli_test",
-		"app_secret":            "secret",
+		"app_secret":            fixedTestAppSecret,
 		"image_batch_window_ms": int64(1200),
 	})
 	if err != nil {
@@ -2156,7 +2224,7 @@ func TestNewPlatform_ImageBatchWindow(t *testing.T) {
 	// timers never fire instantly.
 	p, err = newPlatform("feishu", lark.FeishuBaseUrl, map[string]any{
 		"app_id":                "cli_test",
-		"app_secret":            "secret",
+		"app_secret":            fixedTestAppSecret,
 		"image_batch_window_ms": 0,
 	})
 	if err != nil {
@@ -2173,7 +2241,7 @@ func TestNewPlatform_ImageBatchWindow(t *testing.T) {
 	// Negative is rejected.
 	if _, err := newPlatform("feishu", lark.FeishuBaseUrl, map[string]any{
 		"app_id":                "cli_test",
-		"app_secret":            "secret",
+		"app_secret":            fixedTestAppSecret,
 		"image_batch_window_ms": -1,
 	}); err == nil {
 		t.Error("expected error for negative image_batch_window_ms, got nil")
@@ -2182,7 +2250,7 @@ func TestNewPlatform_ImageBatchWindow(t *testing.T) {
 	// Non-numeric is rejected.
 	if _, err := newPlatform("feishu", lark.FeishuBaseUrl, map[string]any{
 		"app_id":                "cli_test",
-		"app_secret":            "secret",
+		"app_secret":            fixedTestAppSecret,
 		"image_batch_window_ms": "200",
 	}); err == nil {
 		t.Error("expected error for string image_batch_window_ms, got nil")
@@ -2198,7 +2266,7 @@ func TestNewPlatform_ImageBatchWindow(t *testing.T) {
 // core.Message with N image attachments.
 func TestDispatchMessageCoalescesImageBatch(t *testing.T) {
 	const appID = "cli_batch_img"
-	const appSecret = "secret-batch-img"
+	const appSecret = fixedTestAppSecret
 	const chatID = "oc_batch"
 	const userID = "ou_user"
 
@@ -2229,7 +2297,7 @@ func TestDispatchMessageCoalescesImageBatch(t *testing.T) {
 						"code":                0,
 						"msg":                 "success",
 						"expire":              7200,
-						"tenant_access_token": "tenant-token",
+						"tenant_access_token": fixedTestTenantToken,
 					})
 				case strings.Contains(r.URL.Path, "/resources/"):
 					key := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
@@ -2256,8 +2324,12 @@ func TestDispatchMessageCoalescesImageBatch(t *testing.T) {
 				appSecret:    appSecret,
 				dedup:        &core.MessageDedup{},
 				client: lark.NewClient(appID, appSecret,
-					lark.WithOpenBaseUrl(srv.URL),
-					lark.WithHttpClient(srv.Client()),
+					lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+					lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+				),
+				replayClient: lark.NewClient(appID, appSecret,
+					lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+					lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 				),
 				handler: func(_ core.Platform, msg *core.Message) {
 					received <- msg
@@ -2327,7 +2399,7 @@ func TestDispatchMessageCoalescesImageBatch(t *testing.T) {
 // must still produce one dispatched core.Message.
 func TestDispatchMessageSingleImageRegression(t *testing.T) {
 	const appID = "cli_single_img"
-	const appSecret = "secret-single-img"
+	const appSecret = fixedTestAppSecret
 	const imageKey = "img_single"
 
 	imageBytes := []byte{0x89, 'P', 'N', 'G', 'S', '\r', '\n', 0x1a, '\n'}
@@ -2340,7 +2412,7 @@ func TestDispatchMessageSingleImageRegression(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case strings.HasSuffix(r.URL.Path, "/resources/"+imageKey):
 			w.Header().Set("Content-Type", "image/png")
@@ -2362,8 +2434,12 @@ func TestDispatchMessageSingleImageRegression(t *testing.T) {
 		appSecret:    appSecret,
 		dedup:        &core.MessageDedup{},
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(_ core.Platform, msg *core.Message) {
 			got <- msg
@@ -2405,7 +2481,7 @@ func TestDispatchMessageSingleImageRegression(t *testing.T) {
 // image, with quoted context attached. Batching must not affect this code path.
 func TestDispatchMessageQuotedImageNotBatched(t *testing.T) {
 	const appID = "cli_quoted_img"
-	const appSecret = "secret-quoted-img"
+	const appSecret = fixedTestAppSecret
 	const parentMessageID = "om_parent_quoted"
 	const imageKey = "img_quoted"
 
@@ -2419,7 +2495,7 @@ func TestDispatchMessageQuotedImageNotBatched(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case r.URL.Path == "/open-apis/im/v1/messages/"+parentMessageID:
 			w.Header().Set("Content-Type", "application/json")
@@ -2456,8 +2532,12 @@ func TestDispatchMessageQuotedImageNotBatched(t *testing.T) {
 		appID:        appID,
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(_ core.Platform, msg *core.Message) {
 			got <- msg
@@ -2495,7 +2575,7 @@ func TestDispatchMessageQuotedImageNotBatched(t *testing.T) {
 // synchronously dispatches all buffered images without losing any.
 func TestFlushImageBatchesStopsPendingTimers(t *testing.T) {
 	const appID = "cli_flush"
-	const appSecret = "secret-flush"
+	const appSecret = fixedTestAppSecret
 	const imageKey = "img_flush"
 
 	imageBytes := []byte{0x89, 'P', 'N', 'G', 'F', '\r', '\n', 0x1a, '\n'}
@@ -2508,7 +2588,7 @@ func TestFlushImageBatchesStopsPendingTimers(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case strings.HasSuffix(r.URL.Path, "/resources/"+imageKey):
 			w.Header().Set("Content-Type", "image/png")
@@ -2530,8 +2610,12 @@ func TestFlushImageBatchesStopsPendingTimers(t *testing.T) {
 		appSecret:    appSecret,
 		dedup:        &core.MessageDedup{},
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(_ core.Platform, msg *core.Message) {
 			received <- msg
@@ -2603,7 +2687,7 @@ func TestFlushImageBatchesEmptySafe(t *testing.T) {
 // watermark does not drop the image as stale.
 func TestFlushImageBatchForSession(t *testing.T) {
 	const appID = "cli_per_session"
-	const appSecret = "secret-per-session"
+	const appSecret = fixedTestAppSecret
 	const imageKey = "img_per_session"
 
 	imageBytes := []byte{0x89, 'P', 'N', 'G', 'F', '\r', '\n', 0x1a, '\n'}
@@ -2616,7 +2700,7 @@ func TestFlushImageBatchForSession(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case strings.HasSuffix(r.URL.Path, "/resources/"+imageKey):
 			w.Header().Set("Content-Type", "image/png")
@@ -2638,8 +2722,12 @@ func TestFlushImageBatchForSession(t *testing.T) {
 		appSecret:    appSecret,
 		dedup:        &core.MessageDedup{},
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(_ core.Platform, msg *core.Message) {
 			received <- msg
@@ -2754,7 +2842,7 @@ func TestParsePostFiles_NoFiles(t *testing.T) {
 
 func TestDispatchMessagePostWithFiles(t *testing.T) {
 	const appID = "cli_post_files"
-	const appSecret = "secret-post-files"
+	const appSecret = fixedTestAppSecret
 	const messageID = "om_post_files"
 	const fileKey = "file_v3_0015o_post"
 	fileBytes := []byte("fake-xlsx-bytes-here")
@@ -2768,7 +2856,7 @@ func TestDispatchMessagePostWithFiles(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case r.URL.Path == "/open-apis/im/v1/messages/"+messageID+"/resources/"+fileKey:
 			if r.URL.Query().Get("type") != "file" {
@@ -2795,8 +2883,12 @@ func TestDispatchMessagePostWithFiles(t *testing.T) {
 		appID:        appID,
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(_ core.Platform, msg *core.Message) {
 			got <- msg
@@ -2975,7 +3067,13 @@ func TestRichCardTypewriterPreservesWorkingPanels(t *testing.T) {
 		if !working {
 			status = core.CardStatusDone
 		}
-		data := p.BuildRichCard(status, "", []core.ToolStep{{Kind: core.ToolStepKindTool, Name: "Bash", Result: "TOOL OUTPUT", Done: !working}}, "BODY INCREMENT", working, "FOOTER")
+		// A working turn can contain completed tools as well as an active one.
+		// Results belong to completed tools; active tools display their input.
+		steps := []core.ToolStep{{Kind: core.ToolStepKindTool, Name: "Bash", Summary: "echo completed", Result: "TOOL OUTPUT", Done: true}}
+		if working {
+			steps = append(steps, core.ToolStep{Kind: core.ToolStepKindTool, Name: "Bash", Summary: "echo active", Result: "UNFINISHED RESULT"})
+		}
+		data := p.BuildRichCard(status, "", steps, "BODY INCREMENT", working, "FOOTER")
 		var card map[string]any
 		if err := json.Unmarshal([]byte(data), &card); err != nil {
 			t.Fatal(err)
@@ -2983,20 +3081,30 @@ func TestRichCardTypewriterPreservesWorkingPanels(t *testing.T) {
 		if got := card["config"].(map[string]any)["streaming_mode"]; got != working {
 			t.Fatalf("wrong animation flag: %s", data)
 		}
-		elements := card["body"].(map[string]any)["elements"].([]any)
-		// Typewriter settings must preserve the renderer's panel behavior.
-		// The default layout can evolve independently of this configuration.
-		baselineData := baseline.BuildRichCard(status, "", []core.ToolStep{{Kind: core.ToolStepKindTool, Name: "Bash", Result: "TOOL OUTPUT", Done: !working}}, "BODY INCREMENT", working, "FOOTER")
+		_, hasConfig := card["config"].(map[string]any)["streaming_config"]
+		if hasConfig != working {
+			t.Fatalf("typewriter configuration presence = %v, want %v", hasConfig, working)
+		}
+		baselineData := baseline.BuildRichCard(status, "", steps, "BODY INCREMENT", working, "FOOTER")
 		var baselineCard map[string]any
 		if err := json.Unmarshal([]byte(baselineData), &baselineCard); err != nil {
 			t.Fatal(err)
 		}
-		baselineElements := baselineCard["body"].(map[string]any)["elements"].([]any)
-		if elements[0].(map[string]any)["expanded"] != baselineElements[0].(map[string]any)["expanded"] {
-			t.Fatalf("typewriter settings changed tool panel state: %s", data)
+		// Compare the complete body, not only the first panel's expanded flag.
+		// Header verbs are intentionally randomized and excluded.
+		if !reflect.DeepEqual(card["body"], baselineCard["body"]) {
+			t.Fatalf("typewriter settings changed card content: %s", data)
 		}
-		if !strings.Contains(data, "BODY INCREMENT") || !strings.Contains(data, "TOOL OUTPUT") || !strings.Contains(data, "FOOTER") {
-			t.Fatal("card lost content")
+		for _, want := range []string{"BODY INCREMENT", "echo completed", "TOOL OUTPUT", "FOOTER"} {
+			if !strings.Contains(data, want) {
+				t.Fatalf("card lost %q: %s", want, data)
+			}
+		}
+		if working && !strings.Contains(data, "echo active") {
+			t.Fatalf("working tool input was lost: %s", data)
+		}
+		if strings.Contains(data, "UNFINISHED RESULT") {
+			t.Fatalf("unfinished tool was rendered as a completed result: %s", data)
 		}
 	}
 }

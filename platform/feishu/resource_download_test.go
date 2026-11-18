@@ -26,16 +26,18 @@ func makeTestPayload(size int) []byte {
 }
 
 // newTestPlatformForDownload assembles a Platform with the bare-minimum fields the
-// resource-download helper touches. The HTTP client is a vanilla stdlib
-// client (no Transport overrides) so httptest.Server URLs work directly.
+// resource-download helper touches. Its transport permits only the exact fixture
+// endpoint and never consults proxies or follows redirects.
 func newTestPlatformForDownload(domain string, chunkSize, maxBytes int64) *Platform {
+	client := fixtureHTTPClientURL(domain)
+	client.Timeout = 10 * time.Second
 	return &Platform{
 		platformName:         "feishu",
 		domain:               domain,
-		resourceDownloadHTTP: &http.Client{Timeout: 10 * time.Second},
+		resourceDownloadHTTP: client,
 		resourceChunkSize:    chunkSize,
 		resourceMaxBytes:     maxBytes,
-		fetchResourceToken:   func(_ context.Context) (string, error) { return "test-token", nil },
+		fetchResourceToken:   func(_ context.Context) (string, error) { return "TEST_ONLY_FIXED_FEISHU_TENANT_TOKEN", nil },
 	}
 }
 
@@ -82,8 +84,8 @@ func TestDownloadResourceChunked_SmallFileUsesSingleGet(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("unexpected method %s", r.Method)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
-			t.Errorf("Authorization header = %q, want Bearer test-token", got)
+		if got := r.Header.Get("Authorization"); got != "Bearer TEST_ONLY_FIXED_FEISHU_TENANT_TOKEN" {
+			t.Errorf("Authorization header = %q, want Bearer TEST_ONLY_FIXED_FEISHU_TENANT_TOKEN", got)
 		}
 		if r.Header.Get("Range") != "bytes=0-0" {
 			t.Errorf("expected Range bytes=0-0 probe, got %q", r.Header.Get("Range"))
@@ -394,7 +396,7 @@ func TestDownloadResourceChunked_ContextCancelStopsDownload(t *testing.T) {
 // TestDownloadResourceChunked_RejectsEmptyIDs verifies the helper refuses
 // obvious garbage inputs before hitting the network.
 func TestDownloadResourceChunked_RejectsEmptyIDs(t *testing.T) {
-	p := newTestPlatformForDownload("http://localhost:0", 1024, 1024)
+	p := newTestPlatformForDownload("http://127.0.0.1:0", 1024, 1024)
 	_, err := p.downloadResourceChunked(context.Background(), "", "fk_x", "file")
 	if err == nil {
 		t.Fatal("expected error for empty messageID")
@@ -409,7 +411,7 @@ func TestDownloadResourceChunked_RejectsEmptyIDs(t *testing.T) {
 // failure is reported with feishu context and doesn't leak the underlying
 // transport error verbatim.
 func TestDownloadResourceChunked_AuthFailurePropagates(t *testing.T) {
-	p := newTestPlatformForDownload("http://localhost:1", 1024, 1024)
+	p := newTestPlatformForDownload("http://127.0.0.1:1", 1024, 1024)
 	p.fetchResourceToken = func(_ context.Context) (string, error) {
 		return "", errors.New("simulated token error")
 	}

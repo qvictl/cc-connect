@@ -112,6 +112,7 @@ app_secret = "QhkMpxxxxxxxxxxxxxxxxxxxx"
 # thread_isolation = true    # 可选：按飞书 thread/root 隔离群聊会话
 # group_reply_all_chats = ["oc_group_a", "oc_group_b"] # 可选：仅指定群无需 @机器人
 # group_chat_history_share = false  # 可选：共享未 @ 机器人的群消息作为下一次触发的上下文；消息本身不会触发回复
+# solo_chat_reply_all = false  # 可选：群里只有一个人和这个机器人时无需 @；@ 了别人的消息仍不触发
 # progress_style = "legacy"  # 可选：legacy | compact | card
 # ack_emoji = "Get"           # 可选：消息被接受处理或入队时立即添加并保留的确认表情；默认禁用
 # reaction_emoji = "OnIt"      # 可选：agent 处理期间的临时表情，结束后移除
@@ -125,7 +126,9 @@ app_secret = "QhkMpxxxxxxxxxxxxxxxxxxxx"
 > `group_chat_history_share = true` 时，cc-connect 只在内存中保留当前进程观察到的、允许访问的群聊 text/post 消息，并在下一次明确 @ 机器人且真正进入 agent turn 时注入；未 @ 的消息不会触发回复。`/status` 等由 cc-connect 处理的命令不会消费这段待处理上下文，`/new` 会清空对应主频道或话题的上下文。
 > 在 multi-workspace 模式下，`thread_isolation = true` 也会让每个话题独立绑定 workspace；在话题内执行 `/workspace bind <name>` 不会影响同群的其他话题。已有的群级 binding 会保留为默认值，由尚未显式绑定的话题继承，因此回退到旧版本时仍可使用。
 > `progress_style = "compact"` 会把思考/工具进度合并到一条可更新消息里，减少刷屏；`legacy` 保持原有逐条发送；`card` 会使用结构化卡片（标题 + 进度块）持续更新同一条消息，观感比纯文本更清晰。
+> 显式设置 `[display].commentary_messages = true` 后，Codex 面向用户的中途说明（包括 `/ps` 要求的进度回报）会独立发送新消息，不受思考消息开关影响，也不会合并进最终正文。思考和工具日志继续留在进度卡里。Codex 提供 `commentary` 阶段标记时立即发送；旧版未提供标记时，在下一次工具调用或审批请求前识别并发送。
 > 已创建的进度卡更新失败时，会保留原卡片并暂存最新进度；短暂退避后，在后续进度事件到来时重试更新同一张卡片，不会退化为逐条工具消息。结束时会忽略进度退避，尝试写入最终状态。飞书卡片 PATCH 返回 `2200` 内部错误时，会先进行最多 3 次退避重试；持续故障仍可能导致卡片暂时停留在旧状态，最终回复会独立发送。
+> 显式开启独立进度消息后，Antigravity 的 `agent_response` 增量会先合并：后续工具步骤到来时，前面的中途说明独立发送，不再只更新答案卡片；最后一段文本在 result 或进程输出结束时作为最终答案发送。未声明或设置 `[display].commentary_messages = false` 时保留现有进度卡/答案行为；只有显式设置 `true` 才发送独立消息。项目级 `[projects.display]` 支持同名覆盖；显式开启后 quiet 模式也投递独立进度，工具和思考的可见性不变。关闭独立进度消息时，工具调用前的说明仍按原有显示模式进入答案/卡片通道，不会丢弃；quiet 模式会保留在合并答案中。这里保留的是文本/卡片通道及内容，不是原先每个增量的投递时机：结构化 `stream-json` 输出无论开关是否开启，都会等后续工具步骤或 result/EOF 才投递。`final` 模式仍只输出最终答案，不因这个开关显示中途说明。未输出 `stream-json` 的旧版或包装脚本保持纯文本兼容行为。
 > `domain` 只影响运行时 API / WebSocket 请求地址；CLI `setup/new/bind` 的引导域名仍然使用内置默认值。
 > `ack_emoji = "Get"` 会在消息通过校验、被引擎接受处理或成功入队后异步添加确认表情，无需等待模型启动或前一轮结束。它表示“请求已接收”，会在完成、失败或取消后保留，不表示模型已开始执行或任务已成功。现有 `reaction_emoji`（默认 `"OnIt"`）仍表示实际处理，`done_emoji` 表示完成；若 `ack_emoji` 与 `reaction_emoji` 相同，该表情由接收确认保留，不再作为临时状态移除。
 > 确认默认关闭；不配置、空值或 `"none"` 保持原有行为。权限或 @ 过滤、重复/过时消息、满队列拒绝、已处理的命令与无用户消息的定时任务不会产生确认。确认从引擎接受消息时开始；若后续消息仍在等待已有的会话启动锁，也会等待接受决定。表情 API 采用 5 秒超时的异步尽力请求，失败不影响模型处理；发送前的附件下载、消息解析以及多图合批仍需先完成，多图批次确认在最后一条（批次的主消息）上。
@@ -176,6 +179,8 @@ app_secret = "QhkMpxxxxxxxxxxxxxxxxxxxx"
 配置完权限后，点击「申请发布」使权限生效。
 
 如果启用了 `group_reply_all`、`group_reply_all_chats` 或 `group_chat_history_share`，必须为应用申请并发布 `im:message.group_msg`，否则飞书只会向机器人推送被 @ 的群消息，免 @ 回复及未提及消息的共享上下文无法生效。本地配置不会自动授予权限或补齐飞书未推送的事件。群上下文共享不会回溯 cc-connect 启动前的历史，也不会持久化待处理消息。
+
+`solo_chat_reply_all = true` 时，群成员恰好是一个人和这个机器人（群信息接口的 `user_count`、`bot_count` 都为 1，需要 `im:chat:readonly`，结果缓存 30 秒）的群里，没有 @ 任何人的消息也会交给 agent；@ 了别人却没 @ 机器人的消息仍不触发，读取群信息失败时照旧要求 @，失败结果冷却 5 秒后才重试；同一群的并发查询也按需要 @ 处理。仅允许的用户和群会触发查询，不改变群历史的观察规则。未命中缓存时仍同步查询，最多等待 5 秒，以保持消息和历史顺序。同样需要 `im:message.group_msg`，否则飞书不会推送未 @ 的群消息。
 
 ---
 
@@ -471,6 +476,49 @@ BOT-B 机器人会收到飞书 @ 事件并被触发。
 
 ---
 
+## 回复反馈控件（`turn_feedback_exec`）
+
+这是默认关闭、需要自行部署反馈命令的可选功能。开启后，普通回复与文本流式预览的最终答复可以携带反馈表单：
+
+- **👍 有用 / 👎 没用** 与一个选填的意见框（「提交意见」按钮）；
+- **任务整体结果评价**：成功 / 失败 / 终止。
+
+### 配置
+
+```toml
+[projects.platforms.options]
+turn_feedback_exec   = "my-feedback-cmd"               # 必填：点击时执行的命令；为空（默认）则不显示控件
+turn_feedback_gate   = "/path/to/turn-feedback-gate"   # 可选：文件内容为 off 时隐藏 👍/👎 与意见框
+result_feedback_gate = "/path/to/result-feedback-gate" # 可选：文件内容为 off 时隐藏整体结果按钮；未配置时跟随 turn_feedback_gate
+turn_feedback_state  = "/path/to/turn-feedback.json"   # 可选：记住带控件的卡片，点击后重绘并高亮上次的选择（重启后仍有效）
+```
+
+点击时 cc-connect 以独立参数（不经过 shell）执行：
+
+```bash
+my-feedback-cmd --message <回复消息 id> --verdict up|down [--comment <意见>] --operator <open_id>
+my-feedback-cmd --message <回复消息 id> --comment <意见> --operator <open_id>      # 仅提交意见
+my-feedback-cmd --message <回复消息 id> --outcome success|fail|cancelled --operator <open_id>
+```
+
+环境变量 `CC_SESSION_KEY` 为该回复所属会话。整体结果按钮的命令若在 stdout 输出 JSON `{"score_card": <卡片>}`，该卡片会被发到同一会话（话题）中。
+
+### 注意事项
+
+- 需要 `enable_feishu_card = true`（默认）并订阅 `card.action.trigger` 回调；点击同样受 `allow_from` 限制。
+- 点击的 toast 仅表示已经排队，不代表外部命令提交成功；队列满或平台停止时返回错误，不更新选中状态。队列最多等待 256 次提交，按顺序逐个执行，命令超时 30 秒。平台停止会取消活动命令并丢弃未执行提交。结果按钮可以触发上文所述的评分卡消息。
+- 仅接受已经成功发送并记住的卡片，回调中的消息、会话和实际聊天必须匹配。旧卡片、已淘汰的卡片以及没有状态文件时重启前的卡片需要重新生成。这不增加原发送者专属权限；仍由现有聊天和用户白名单控制。
+- 子进程只获得 PATH、独立临时 HOME、LANG 和 CC_SESSION_KEY，不继承令牌、代理或其他环境变量。请使用受信任的可执行文件并自行配置其必要访问权限。命令按空白拆分，不支持 shell 引号或展开；意见通过独立参数传入，也可能被本机进程查看工具看到。
+- stdout 最多保留 256 KiB，stderr 最多保留 16 KiB；超限 stdout 不解析为评分卡。日志不记录命令输出、参数或意见原文。此功能不是进程沙箱，不能限制受信任命令的文件访问、网络访问或所有后代进程。
+- 状态文件以受限权限保存最多 1000 张卡片，包含回复正文、意见、选择和会话标识。请将它放在受控目录；关闭状态文件仍会使用进程内存。卡片高亮表示已排队的选择，不代表后端处理成功。
+- 没有状态页脚的纯文本回复仍以文本发送；带真实 @ 的回复也保持文本，控件以一张独立小卡片紧跟其后。已有状态页脚仍可使用卡片。
+- 如果普通答复在最后一次工具调用之前已经成功发出，控件可补到本轮记录的答复卡片上，或作为独立卡片发在其下方；不会复用上一轮或后续进度提示的卡片。
+- 富卡片、StreamingCard 和 final 输出模式尚未接入此可选功能。仅进度中的 narration、静默回复、发送失败或未确认送达的内容不保证有控件。平台发送失败时控件为尽力补发，不保证显示。
+- 本地整合目前只完成源代码检查，Go 编译、格式化、行为测试、竞态测试、真实命令和飞书客户端验证均未运行。
+- 两个 gate 文件每次发送最终回复时重新读取，可在不重启的情况下开关；文件不存在视为开启。
+
+---
+
 ## 常见问题
 
 ### Q: 长连接和 Webhook 有什么区别？
@@ -487,6 +535,8 @@ BOT-B 机器人会收到飞书 @ 事件并被触发。
 ### Q: 长连接断开怎么办？
 
 cc-connect 内置了自动重连机制，断开后会自动尝试重新连接。
+
+如果临时网络故障耗尽了飞书 SDK 的重连次数，cc-connect 会重新创建连接客户端，按 1、2、4 秒逐步退避，最长间隔 30 秒。主动停止主连接会取消恢复，普通断线重连仍由 SDK 负责。SDK 分类为不可自动重试的错误（包括认证、配置以及连接数限制）不会被外层重试；连接数限制解除后也需人工重启。此机制不负责历史消息补发，也不在主平台停止后将连接所有权转交给共享平台。
 
 ### Q: 消息发送后没有响应？
 
@@ -546,3 +596,34 @@ enable_feishu_card = false
 - [接入 Slack](./slack.md)
 - [接入 Discord](./discord.md)
 - [返回首页](../README.md)
+
+### Codex 进度消息的显示控制
+
+Codex 的用户可见进度默认保留现有进度卡/答案行为。可在 `[display]` 或
+`[projects.display]` 显式设置 `commentary_messages = true` 开启独立消息；
+开启后即使使用 `quiet` 模式或隐藏 thinking，每次工具调用前也可能产生一条消息。
+未声明或设为 `false` 不会单独发送。项目级设置覆盖全局设置。
+`partial_answer` 和 `final_answer` 都进入答案通道，不会在工具调用时变成进度消息。
+开启独立消息时，进度不加入 `/history` 的最终答案；审批提示之前的进度会先发送，再显示审批卡片。
+未提供 `phase` 的旧版 Codex 使用工具边界回退，不依赖特定 provider 提供阶段字段。
+
+手动压缩会显示进度，自动压缩保持静默。Bot 间 relay 是只返回最终答案的请求/响应接口，
+不会把进度混入调用方上下文；relay 超时后的后台排空也不会重新投递进度。
+
+`card` 进度卡与 `card_mode = "rich"` 的工具面板会把一次调用的输入、状态、退出码和输出放在一起。支持调用 ID 的后端按 ID 对应结果，即使同名工具并发、结果乱序也不会串到其他调用。旧后端没有 ID 时，仅在能唯一确定调用时合并。
+
+命令保留引号及换行；工具输出按原文代码块展示。长输入和输出受 `display.tool_max_len` 限制，保留开头与结尾（输出最多预览 8 行），并提示中间内容已省略。结构化输入先保留有效 JSON，再对字符串字段应用长度限制，避免截断 JSON 后丢失命令或路径。凭据在截断之前脱敏。进度卡只保留最近的调用；晚返回的结果仍携带原调用的输入。
+
+合并后的工具行保留开始与结果到达时间；显示为 `开始 → 完成`，刷新卡片不会重置开始时间。
+
+
+### Burst coalescing and mention policy
+
+`inbound_coalesce_window_ms` is an optional quiet interval for already accepted
+plain text and image messages. Its maximum setting of 60000 ms is not an
+attachment retention TTL: each accepted arrival resets the timer, so a continuous
+burst can remain queued longer. The existing image-batch delay comes first.
+The coalescer preserves sender/channel boundaries, but it does not retain a
+previously rejected unmentioned attachment for a later `@bot` message. It does
+not implement the separate pending attachment-staging proposal. Quoted messages,
+commands, permission replies and other attachment types flush the batch.

@@ -17,7 +17,12 @@ import (
 )
 
 // Opt in with CC_CODEX_INTEGRATION_BIN=/absolute/path/to/codex. The real CLI
-// talks only to this local provider; no credentials or paid model are needed.
+// is intended to talk to the local provider without credentials. This is not a
+// network sandbox: opt in only in an isolated environment with outbound access
+// blocked and no inherited credentials. Do not run under a no-network policy.
+// Older CLI compatibility and a minimum supported version are not established
+// by the token-free command fixture below; verify with the intended CLI before
+// enabling this integration test.
 func TestAppServerSession_RealCodexEffort(t *testing.T) {
 	bin := os.Getenv("CC_CODEX_INTEGRATION_BIN")
 	if bin == "" {
@@ -27,7 +32,10 @@ func TestAppServerSession_RealCodexEffort(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if r.Method == http.MethodPost && json.NewDecoder(r.Body).Decode(&body) == nil {
-			requests <- body
+			select {
+			case requests <- body:
+			default: // Retries must not block handler shutdown after a failed assertion.
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -92,7 +100,12 @@ func TestAppServerSession_UsesConfiguredCommandAndArguments(t *testing.T) {
 	t.Setenv("CC_CODEX_COMMAND_TEST", "1")
 	trace := filepath.Join(dir, "requests.jsonl")
 	t.Setenv("CC_CODEX_COMMAND_TRACE", trace)
-	cmd := []string{bin, "-test.run=^TestAppServerCommandProcess$", "--", "-p", "profile with spaces", "-c", `model_reasoning_effort="medium"`}
+	t.Setenv("CC_CODEX_TEST_BINARY", bin)
+	wrapper := filepath.Join(dir, "configured-codex")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexec \"$CC_CODEX_TEST_BINARY\" -test.run=^TestAppServerCommandProcess$ -- \"$@\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := []string{wrapper, "-p", "profile with spaces", "-c", `model_reasoning_effort="medium"`}
 	a, err := New(map[string]any{
 		"backend": "app_server", "cmd": cmd, "work_dir": dir,
 		"model": "test-model", "reasoning_effort": "high", "mode": "yolo",
@@ -102,7 +115,8 @@ func TestAppServerSession_UsesConfiguredCommandAndArguments(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	for _, resumeID := range []string{"", "saved-thread"} {
+	for i, resumeID := range []string{"", "saved-thread"} {
+		a.(*Agent).SetReasoningEffort([]string{"high", "low"}[i])
 		s, err := a.StartSession(ctx, resumeID)
 		if err != nil {
 			t.Fatalf("start with configured command (resume %q): %v", resumeID, err)
@@ -117,7 +131,7 @@ func TestAppServerSession_UsesConfiguredCommandAndArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	starts, resumes, turns := 0, 0, 0
+	starts, resumes, turns, launches := 0, 0, 0, 0
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		var record struct {
@@ -129,7 +143,13 @@ func TestAppServerSession_UsesConfiguredCommandAndArguments(t *testing.T) {
 			t.Fatal(err)
 		}
 		if record.Args != nil {
-			want := append(append([]string{}, cmd[1:]...), "app-server", "-c", `model="test-model"`, "-c", `model_reasoning_effort="high"`)
+			if launches >= 2 {
+				t.Fatal("unexpected extra app-server launch")
+			}
+			effort := []string{"high", "low"}[launches]
+			launches++
+			want := []string{"-p", "profile with spaces", "app-server",
+				"-c", `model_reasoning_effort="medium"`, "-c", `model="test-model"`, "-c", fmt.Sprintf("model_reasoning_effort=%q", effort)}
 			if !reflect.DeepEqual(record.Args, want) {
 				t.Fatalf("launched args = %q, want %q", record.Args, want)
 			}
@@ -140,16 +160,20 @@ func TestAppServerSession_UsesConfiguredCommandAndArguments(t *testing.T) {
 		case "thread/resume":
 			resumes++
 		case "turn/start":
+			if turns >= 2 {
+				t.Fatal("unexpected extra turn")
+			}
+			effort := []string{"high", "low"}[turns]
 			turns++
-			if record.Params["effort"] != "high" {
-				t.Fatalf("turn effort = %v, want high", record.Params["effort"])
+			if record.Params["effort"] != effort {
+				t.Fatalf("turn effort = %v, want %s", record.Params["effort"], effort)
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if starts != 1 || resumes != 1 || turns != 2 {
+	if starts != 1 || resumes != 1 || turns != 2 || launches != 2 {
 		t.Fatalf("start/resume/turn counts = %d/%d/%d, want 1/1/2", starts, resumes, turns)
 	}
 }
@@ -165,7 +189,17 @@ func TestAppServerCommandProcess(t *testing.T) {
 	}
 	defer func() { _ = trace.Close() }()
 	log := json.NewEncoder(trace)
-	_ = log.Encode(map[string]any{"args": os.Args[1:]})
+	args := os.Args[3:] // Strip only the test wrapper's -test.run and -- flags.
+	_ = log.Encode(map[string]any{"args": args})
+	effort := "medium"
+	for _, arg := range args {
+		switch arg {
+		case `model_reasoning_effort="high"`:
+			effort = "high"
+		case `model_reasoning_effort="low"`:
+			effort = "low"
+		}
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	out := json.NewEncoder(os.Stdout)
 	for scanner.Scan() {
@@ -180,7 +214,7 @@ func TestAppServerCommandProcess(t *testing.T) {
 		result := map[string]any{}
 		switch request["method"] {
 		case "thread/start", "thread/resume":
-			result = map[string]any{"thread": map[string]any{"id": "saved-thread"}, "model": "test-model", "reasoningEffort": "high"}
+			result = map[string]any{"thread": map[string]any{"id": "saved-thread"}, "model": "test-model", "reasoningEffort": effort}
 		case "turn/start":
 			result = map[string]any{"turn": map[string]any{"id": "test-turn"}}
 		}

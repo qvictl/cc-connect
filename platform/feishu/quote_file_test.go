@@ -114,7 +114,7 @@ func TestFilterQuotedFilesForUser(t *testing.T) {
 // the resource endpoint is hit exactly once across the three cases.
 func TestDispatchMessageQuotedFileAcceptance(t *testing.T) {
 	const appID = "cli_quote_file"
-	const appSecret = "secret-quote-file"
+	const appSecret = fixedTestAppSecret
 	const botOpenID = "ou_bot"
 	const currentUser = "ou_alice"
 	const parentMessageID = "om_parent_file"
@@ -146,7 +146,7 @@ func TestDispatchMessageQuotedFileAcceptance(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case r.URL.Path == "/open-apis/im/v1/messages/"+parentMessageID:
 			w.Header().Set("Content-Type", "application/json")
@@ -219,8 +219,12 @@ func TestDispatchMessageQuotedFileAcceptance(t *testing.T) {
 			botOpenID:    botOpenID,
 			handler:      handler,
 			client: lark.NewClient(appID, appSecret,
-				lark.WithOpenBaseUrl(srv.URL),
-				lark.WithHttpClient(srv.Client()),
+				lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+				lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+			),
+			replayClient: lark.NewClient(appID, appSecret,
+				lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+				lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 			),
 		}
 	}
@@ -324,7 +328,7 @@ func TestDispatchMessageQuotedFileAcceptance(t *testing.T) {
 // is not attached to the dispatched core.Message.
 func TestDispatchMessageQuotedFileForeignUserDropped(t *testing.T) {
 	const appID = "cli_quote_file_foreign"
-	const appSecret = "secret-quote-file-foreign"
+	const appSecret = fixedTestAppSecret
 	const botOpenID = "ou_bot"
 	const currentUser = "ou_alice"
 	const foreignUser = "ou_bob"
@@ -338,7 +342,7 @@ func TestDispatchMessageQuotedFileForeignUserDropped(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "tenant-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case r.URL.Path == "/open-apis/im/v1/messages/"+parentMessageID:
 			w.Header().Set("Content-Type", "application/json")
@@ -387,8 +391,12 @@ func TestDispatchMessageQuotedFileForeignUserDropped(t *testing.T) {
 		appSecret:    appSecret,
 		botOpenID:    botOpenID,
 		client: lark.NewClient(appID, appSecret,
-			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
+		),
+		replayClient: lark.NewClient(appID, appSecret,
+			lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		handler: func(_ core.Platform, msg *core.Message) { got <- msg },
 	}

@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -263,6 +264,45 @@ func TestRenderCardMap_InjectsSessionKeyIntoCallbacks(t *testing.T) {
 	selectValue := selectActions[0]["value"].(map[string]string)
 	if selectValue["session_key"] != "feishu:oc_chat:root:om_root" {
 		t.Fatalf("select session_key = %#v, want thread session key", selectValue["session_key"])
+	}
+}
+
+func TestBuildMarkdownCardJSON_FillsAvailableWidth(t *testing.T) {
+	const content = "| Item | Description |\n| --- | --- |\n| Width | Fill the available space |"
+	for _, tt := range []struct {
+		name string
+		card string
+	}{
+		{"plain", buildCardJSON(content)},
+		{"with footer", buildCardJSONWithStatusFooter(content, "Status")},
+		{"empty footer", buildCardJSONWithStatusFooter(content, "")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			card := decodeTestReplyCard(t, tt.card)
+			if card.Schema != "2.0" || card.Config.WidthMode != "fill" {
+				t.Errorf("schema = %q, width_mode = %q; want 2.0 and fill", card.Schema, card.Config.WidthMode)
+			}
+			if len(card.Body.Elements) == 0 {
+				t.Fatal("card lost the table")
+			}
+			// Tables use weighted column rows, not a native Markdown element.
+			// Verify every cell survives while the card remains full-width.
+			cells, weights := testTableRows(t, card.Body.Elements[0])
+			wantCells := [][]string{{"**Item**", "**Description**"}, {"Width", "Fill the available space"}}
+			if !reflect.DeepEqual(cells, wantCells) {
+				t.Errorf("table cells = %#v, want %#v", cells, wantCells)
+			}
+			if len(weights) != 2 || weights[0] <= 0 || weights[1] <= 0 {
+				t.Errorf("table weights = %v, want two positive weights", weights)
+			}
+			if tt.name == "with footer" {
+				if len(card.Body.Elements) != 3 || card.Body.Elements[1].Tag != "hr" || card.Body.Elements[2].Content != "Status" {
+					t.Errorf("footer changed: %#v", card.Body.Elements)
+				}
+			} else if len(card.Body.Elements) != 1 {
+				t.Errorf("empty footer added elements: %#v", card.Body.Elements)
+			}
+		})
 	}
 }
 

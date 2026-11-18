@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,24 @@ import (
 // In "auto" mode, permission requests are auto-approved internally
 // (avoiding --dangerously-skip-permissions which fails under root).
 type claudeSession struct {
+	// subagents maps each Agent-tool subagent seen in task_started to whether
+	// it runs in the background. Read loop only. Entries intentionally live
+	// until the session ends so a later task_started for the same ID is
+	// recognized as a wake, not a new subagent. Retention grows with the
+	// number of distinct subagents launched during this session.
+	subagents map[string]bool
+
+	// Mid-turn input (SendMidTurn): messages not yet folded or run, and a
+	// turn's result held or merged while a follow-up turn may start.
+	midTurnMu      sync.Mutex
+	midTurnPending []uint64
+	midTurnNextID  uint64
+	heldResult     *core.Event
+	heldTimer      *time.Timer
+	mergedResult   *core.Event
+
+	sidechain       *sidechainMeter
+	dataDir         string
 	cmd             *exec.Cmd
 	stdin           io.WriteCloser
 	stdinMu         sync.Mutex
@@ -556,6 +575,8 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	}
 
 	cs := &claudeSession{
+		sidechain: newSidechainMeter(),
+		dataDir: ccDataDir,
 		cmd:                  cmd,
 		stdin:                stdin,
 		events:               make(chan core.Event, 64),
@@ -573,6 +594,10 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	}
 	cs.setPermissionMode(mode)
 	cs.sessionID.Store(sessionID)
+	if sessionID != "" && sessionID != core.ContinueSession && !cs.sidechain.persistTo(sidechainStatePath(ccDataDir, sessionID)) {
+		cs.sidechain.baseline(subagentsDir(cs.transcriptPath()))
+	}
+
 	cs.alive.Store(true)
 
 	go cs.readLoop(stdout, &stderrBuf)
@@ -628,6 +653,7 @@ func (cs *claudeSession) startReadLoopWait(stdout io.ReadCloser) (<-chan error, 
 
 func (cs *claudeSession) finishReadLoop(waitErrCh <-chan error, stderrBuf *bytes.Buffer) {
 	err := <-waitErrCh
+	cs.releaseHeldResult()
 
 	cs.alive.Store(false)
 	// A dead process has no active turn; clear the flag so a later /stop
@@ -688,7 +714,25 @@ func (cs *claudeSession) handleReadLoopLine(line string) {
 	}
 
 	eventType, _ := raw["type"].(string)
-	slog.Debug("claudeSession: event", "type", eventType)
+	// The type field is untrusted too: a renamed settings envelope must not
+	// put arbitrary values into the log before the dispatch switch.
+	slog.Debug("claudeSession: event", "bytes", len(line))
+
+	// With CLAUDE_CODE_FORWARD_SUBAGENT_TEXT set, Claude Code also streams the
+	// messages of its subagents, tagged with the Agent tool call they belong
+	// to. They are progress, not the answer: see handleSubagent.
+	if parent, _ := raw["parent_tool_use_id"].(string); parent != "" && (eventType == "assistant" || eventType == "user") {
+		cs.handleSubagent(eventType, parent, raw)
+		return
+	}
+
+	// Once a mid-turn write is expected, unrelated stream events must not
+	// release the held result. Some CLI versions emit echoes or system events
+	// before init; a subsequent result can also identify the follow-up.
+	subtype, _ := raw["subtype"].(string)
+	if eventType == "system" && subtype == "init" {
+		cs.followUpTurnStarted()
+	}
 
 	switch eventType {
 	case "system":
@@ -716,9 +760,11 @@ func (cs *claudeSession) handleReadLoopLine(line string) {
 }
 
 // isCompactionResult reports whether a `type:"result"` event is actually
-// a mid-turn compaction notification. Claude Code uses the value
-// `compact` in newer CLI versions and `compaction` in older ones; we
-// accept both to be safe across CLI rollouts (issue #481).
+// a mid-turn compaction notification (issue #481). Claude Code does not
+// report compaction this way -- it emits a `system` message with subtype
+// `compact_boundary` instead (see handleCompactBoundary), and its result
+// subtypes are `success` and `error_*`. The check is kept as a defensive
+// guard so a result carrying a compaction subtype never ends the turn.
 func isCompactionResult(raw map[string]any) bool {
 	return resultSubtype(raw) == "compact" || resultSubtype(raw) == "compaction"
 }
@@ -749,11 +795,17 @@ func resultSubtype(raw map[string]any) string {
 }
 
 func (cs *claudeSession) handleSystem(raw map[string]any) {
+	if subtype, _ := raw["subtype"].(string); strings.HasPrefix(subtype, "task_") {
+		cs.handleTask(subtype, raw)
+	}
 	if model, ok := raw["model"].(string); ok && model != "" {
 		cs.updateActiveModel(model)
 	}
-	if subtype, _ := raw["subtype"].(string); subtype == "model_refusal_fallback" {
+	switch subtype, _ := raw["subtype"].(string); subtype {
+	case "model_refusal_fallback":
 		cs.handleRefusalFallback(raw)
+	case "compact_boundary":
+		cs.handleCompactBoundary(raw)
 	}
 	if sid, ok := raw["session_id"].(string); ok && sid != "" {
 		cs.sessionID.Store(sid)
@@ -781,6 +833,32 @@ func (cs *claudeSession) handleSystem(raw map[string]any) {
 			cs.usageMu.Unlock()
 		}
 	})
+}
+
+// handleCompactBoundary reports a context compaction. Claude Code marks one,
+// automatic or triggered by /compact, with a `system` message of subtype
+// `compact_boundary` whose compact_metadata says what triggered it and how
+// many tokens the context held before (and, on newer CLIs, after) it:
+//
+//	{"type":"system","subtype":"compact_boundary","session_id":"...",
+//	 "compact_metadata":{"trigger":"auto","pre_tokens":167012}}
+//
+// The turn is not over: the CLI keeps streaming assistant and tool events
+// and closes the turn with its usual result event.
+func (cs *claudeSession) handleCompactBoundary(raw map[string]any) {
+	meta := map[string]any{}
+	if details, ok := raw["compact_metadata"].(map[string]any); ok {
+		for _, key := range []string{"trigger", "pre_tokens", "post_tokens", "duration_ms"} {
+			if v, ok := details[key]; ok {
+				meta[key] = v
+			}
+		}
+	}
+	slog.Info("claudeSession: context compacted", "session_id", cs.CurrentSessionID(), "metadata", meta)
+	select {
+	case cs.events <- core.Event{Type: core.EventCompact, Metadata: meta}:
+	case <-cs.ctx.Done():
+	}
 }
 
 // handleRefusalFallback handles Claude Code's model_refusal_fallback event:
@@ -1150,7 +1228,8 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 				continue
 			}
 			inputSummary := summarizeInput(toolName, item["input"])
-			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary}
+			id, _ := item["id"].(string)
+			evt := core.Event{Type: core.EventToolUse, ToolCallID: id, ToolName: toolName, ToolInput: inputSummary}
 			select {
 			case cs.events <- evt:
 			case <-cs.ctx.Done():
@@ -1175,6 +1254,127 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 				}
 			}
 		}
+	}
+}
+
+// handleSubagent turns a subagent's text, thinking and tool calls into
+// EventSubagent steps. The engine shows each subagent on its own card, apart
+// from the turn: none of it may become EventText (it would be spliced into
+// the reply), its usage is the subagent's own context window and must not
+// drive the ctx indicator, and its prompt and tool results stay out (the
+// prompt arrives with task_started; Claude Code's tool results carry no tool
+// name to pair them with the right step).
+func (cs *claudeSession) handleSubagent(eventType, parent string, raw map[string]any) {
+	if eventType != "assistant" {
+		return
+	}
+	msg, ok := raw["message"].(map[string]any)
+	if !ok {
+		return
+	}
+	contentArr, ok := msg["content"].([]any)
+	if !ok {
+		return
+	}
+	for _, contentItem := range contentArr {
+		item, ok := contentItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		var step core.ProgressCardEntry
+		switch contentType, _ := item["type"].(string); contentType {
+		case "tool_use":
+			toolName, _ := item["name"].(string)
+			if toolName == "" {
+				continue
+			}
+			step = core.ProgressCardEntry{Kind: core.ProgressEntryToolUse, Tool: toolName, Text: summarizeInput(toolName, item["input"])}
+		case "thinking":
+			thinking, _ := item["thinking"].(string)
+			if strings.TrimSpace(thinking) == "" {
+				continue
+			}
+			step = core.ProgressCardEntry{Kind: core.ProgressEntryThinking, Text: thinking}
+		case "text":
+			text, _ := item["text"].(string)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			step = core.ProgressCardEntry{Kind: core.ProgressEntryInfo, Text: text}
+		default:
+			continue
+		}
+		if !cs.emitSubagent(core.SubagentEvent{ID: parent, Phase: core.SubagentStep, Step: step}) {
+			return
+		}
+	}
+}
+
+// handleTask follows the life of Agent-tool subagents through Claude Code's
+// task events (task_type "local_agent"; background shells and other tasks
+// are left alone). task_started opens the subagent's card, again when a
+// notification wakes it; task_notification closes it.
+func (cs *claudeSession) handleTask(subtype string, raw map[string]any) {
+	id, _ := raw["tool_use_id"].(string)
+	if id == "" {
+		return
+	}
+	switch subtype {
+	case "task_started":
+		if kind, _ := raw["task_type"].(string); kind != "local_agent" {
+			return
+		}
+		background, _ := raw["is_backgrounded"].(bool)
+		_, woken := cs.subagents[id]
+		if cs.subagents == nil {
+			cs.subagents = make(map[string]bool)
+		}
+		cs.subagents[id] = background
+		ev := core.SubagentEvent{ID: id, Phase: core.SubagentStarted, Background: background}
+		ev.Title, _ = raw["description"].(string)
+		ev.Kind, _ = raw["subagent_type"].(string)
+		if !woken {
+			// A woken subagent's prompt is the notification that woke it.
+			ev.Prompt, _ = raw["prompt"].(string)
+		}
+		cs.emitSubagent(ev)
+	case "task_notification":
+		if _, ok := cs.subagents[id]; !ok {
+			return
+		}
+		ev := core.SubagentEvent{ID: id, Phase: core.SubagentFinished}
+		ev.Status, _ = raw["status"].(string)
+		ev.Summary, _ = raw["summary"].(string)
+		cs.emitSubagent(ev)
+	}
+}
+
+// finishForegroundSubagent closes a foreground subagent's card when the
+// Agent tool call returns, in case no task_notification reports it. The
+// tool result of a background subagent only says it was launched.
+func (cs *claudeSession) finishForegroundSubagent(item map[string]any, isError bool) {
+	id, _ := item["tool_use_id"].(string)
+	if background, ok := cs.subagents[id]; !ok || background {
+		return
+	}
+	status := "completed"
+	if isError {
+		status = "failed"
+	}
+	cs.emitSubagent(core.SubagentEvent{ID: id, Phase: core.SubagentFinished, Status: status})
+}
+
+func (cs *claudeSession) emitSubagent(ev core.SubagentEvent) bool {
+	evt := core.Event{
+		Type:     core.EventSubagent,
+		Subagent: &ev,
+		Metadata: map[string]any{core.MetaParentToolUseID: ev.ID},
+	}
+	select {
+	case cs.events <- evt:
+		return true
+	case <-cs.ctx.Done():
+		return false
 	}
 }
 
@@ -1207,6 +1407,7 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 		}
 		if contentType == "tool_result" {
 			isError, _ := item["is_error"].(bool)
+			cs.finishForegroundSubagent(item, isError)
 			var result string
 			switch c := item["content"].(type) {
 			case string:
@@ -1223,16 +1424,18 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 				result = strings.Join(parts, "\n")
 			}
 			if isError {
-				slog.Debug("claudeSession: tool error", "content", result)
+				slog.Debug("claudeSession: tool error", "output_len", len(result))
 			}
 			success := !isError
 			code := 0
 			if isError {
 				code = 1
 			}
+			toolID, _ := item["tool_use_id"].(string)
 			evt := core.Event{
 				Type:         core.EventToolResult,
-				ToolResult:   truncateStr(strings.TrimSpace(result), 500),
+				ToolCallID:   toolID,
+				ToolResult:   core.BoundedToolOutput(result),
 				ToolExitCode: &code,
 				ToolSuccess:  &success,
 			}
@@ -1270,12 +1473,13 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 		return
 	}
 
-	// Compaction events arrive as `type:"result"` with `subtype:"compact"`
-	// or `subtype:"compaction"`. They are NOT turn completion — the CLI
+	// Defensive guard (issue #481): should a result ever carry a compaction
+	// subtype (`compact` / `compaction`), it is NOT turn completion — the CLI
 	// is mid-task and will continue streaming subsequent tool calls and
-	// assistant messages after the compaction step. Treating these as
-	// Done=true would make the engine's processInteractiveEvents return
-	// early and drop the rest of the turn (issue #481).
+	// assistant messages. Treating it as Done=true would make the engine's
+	// processInteractiveEvents return early and drop the rest of the turn.
+	// Claude Code itself reports compaction as a `system` message of subtype
+	// `compact_boundary`, handled in handleSystem.
 	isCompaction := isCompactionResult(raw)
 	if isCompaction {
 		slog.Info("claudeSession: mid-turn compaction event; continuing turn", "subtype", resultSubtype(raw))
@@ -1363,6 +1567,11 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 	}
 	cs.usageMu.Unlock()
 
+	var sidechain *core.SidechainUsage
+	if !isCompaction {
+		cs.sidechain.persistTo(sidechainStatePath(cs.dataDir, cs.CurrentSessionID()))
+		sidechain = cs.sidechain.collect(subagentsDir(cs.transcriptPath()))
+	}
 	evt := core.Event{
 		Type:                     core.EventResult,
 		Content:                  content,
@@ -1372,12 +1581,13 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: cacheCreationTokens,
 		CacheReadInputTokens:     cacheReadTokens,
+		Sidechain:                sidechain,
 	}
-	select {
-	case cs.events <- evt:
-	case <-cs.ctx.Done():
+	if isCompaction {
+		cs.emit(evt)
 		return
 	}
+	cs.deliverResult(evt)
 }
 
 func (cs *claudeSession) handleControlRequest(raw map[string]any) {
@@ -1780,6 +1990,185 @@ func (cs *claudeSession) GetContextUsage() *core.ContextUsage {
 
 func (cs *claudeSession) Alive() bool {
 	return cs.alive.Load()
+}
+
+// followUpTurnWindow is how long a turn's result is held, after a mid-turn
+// message, for Claude Code to start a follow-up turn. It starts one within
+// milliseconds of the result (measured 8ms on 2.1.280); the window only
+// delays the final reply when the message was folded into the turn.
+var followUpTurnWindow = 2 * time.Second
+
+// SendMidTurn writes a user message while a turn is running. Claude Code reads
+// stream-json user messages from the same stdin and folds a mid-turn message
+// into the active turn at its next tool boundary. When the turn has no
+// boundary left, it runs the message as a follow-up turn right after the
+// result instead; that turn is merged into the running one (see
+// deliverResult), so the engine still sees exactly one EventResult.
+func (cs *claudeSession) SendMidTurn(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	// Reserve before writing: the reader can receive a result as soon as
+	// stdin accepts the message, even before Send returns.
+	cs.midTurnMu.Lock()
+	cs.midTurnNextID++
+	reservation := cs.midTurnNextID
+	cs.midTurnPending = append(cs.midTurnPending, reservation)
+	cs.midTurnMu.Unlock()
+	if err := cs.Send(prompt, messageID, images, files); err != nil {
+		cs.midTurnMu.Lock()
+		// Remove only this write's reservation. A follow-up may already
+		// have consumed it while another input is still outstanding.
+		for i, id := range cs.midTurnPending {
+			if id == reservation {
+				cs.midTurnPending = append(cs.midTurnPending[:i], cs.midTurnPending[i+1:]...)
+				break
+			}
+		}
+		if len(cs.midTurnPending) == 0 {
+			cs.releaseHeldResultLocked()
+		}
+		cs.midTurnMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+var _ core.MidTurnInputSender = (*claudeSession)(nil)
+
+// deliverResult emits a turn-ending result, first prepending any earlier turn
+// merged into it. While mid-turn messages are outstanding it holds the result
+// instead: a follow-up turn starting within followUpTurnWindow is merged
+// (followUpTurnStarted), otherwise the result is released unchanged.
+func (cs *claudeSession) deliverResult(evt core.Event) {
+	cs.midTurnMu.Lock()
+	// A terminal foreground result inside the window is enough evidence
+	// of the expected follow-up, even if no init event was emitted.
+	cs.followUpTurnStartedLocked()
+	if prev := cs.mergedResult; prev != nil {
+		cs.mergedResult = nil
+		evt = mergeTurnResults(*prev, evt)
+	}
+	if len(cs.midTurnPending) > 0 {
+		cs.heldResult = &evt
+		cs.heldTimer = time.AfterFunc(followUpTurnWindow, func() {
+			cs.midTurnMu.Lock()
+			defer cs.midTurnMu.Unlock()
+			// An expired callback must not release a later held result.
+			if cs.heldResult == &evt {
+				cs.releaseHeldResultLocked()
+			}
+		})
+		cs.midTurnMu.Unlock()
+		return
+	}
+	cs.midTurnMu.Unlock()
+	cs.emit(evt)
+}
+
+// followUpTurnStarted is called on a turn's system init. If a result is held,
+// the new turn runs a mid-turn message: keep the held result to merge into it.
+func (cs *claudeSession) followUpTurnStarted() {
+	cs.midTurnMu.Lock()
+	defer cs.midTurnMu.Unlock()
+	if cs.heldResult != nil {
+		// The prior result cleared turnActive. A confirmed follow-up init
+		// starts another native turn, so cancellation must not take idle's
+		// fast path. Do not do this in the result-only fallback helper.
+		cs.turnActive.Store(true)
+	}
+	cs.followUpTurnStartedLocked()
+}
+
+// midTurnMu must be held. The holder of the mutex wins against expiry;
+// stale timer callbacks are tied to their original result.
+func (cs *claudeSession) followUpTurnStartedLocked() {
+	if cs.heldResult == nil {
+		return
+	}
+	cs.heldTimer.Stop()
+	cs.mergedResult = cs.heldResult
+	cs.heldResult = nil
+	if len(cs.midTurnPending) > 0 {
+		cs.midTurnPending = cs.midTurnPending[1:]
+	}
+	slog.Info("claudeSession: mid-turn message runs as a follow-up turn; merging it into the running turn",
+		"session_id", cs.CurrentSessionID())
+}
+
+// releaseHeldResult emits a held result: the mid-turn messages were folded
+// into the turn, the write failed, or the process exited. Holding midTurnMu across the send
+// keeps it ahead of whatever the read loop emits next.
+func (cs *claudeSession) releaseHeldResult() {
+	cs.midTurnMu.Lock()
+	defer cs.midTurnMu.Unlock()
+	cs.releaseHeldResultLocked()
+}
+
+// midTurnMu must be held.
+func (cs *claudeSession) releaseHeldResultLocked() {
+	if cs.heldResult == nil {
+		return
+	}
+	cs.heldTimer.Stop()
+	evt := *cs.heldResult
+	cs.heldResult = nil
+	cs.midTurnPending = nil
+	cs.emit(evt)
+}
+
+func (cs *claudeSession) emit(evt core.Event) {
+	select {
+	case cs.events <- evt:
+	case <-cs.ctx.Done():
+	}
+}
+
+// mergeTurnResults reports two consecutive turns as one: the reply text of
+// both, in order, and the usage of both.
+func mergeTurnResults(first, second core.Event) core.Event {
+	merged := second
+	switch {
+	case strings.TrimSpace(first.Content) == "":
+	case strings.TrimSpace(second.Content) == "":
+		merged.Content = first.Content
+	default:
+		merged.Content = first.Content + "\n\n" + second.Content
+	}
+	merged.InputTokens += first.InputTokens
+	merged.OutputTokens += first.OutputTokens
+	merged.CacheCreationInputTokens += first.CacheCreationInputTokens
+	merged.CacheReadInputTokens += first.CacheReadInputTokens
+	merged.ReasoningOutputTokens += first.ReasoningOutputTokens
+	merged.UsageIncomplete = first.UsageIncomplete || second.UsageIncomplete
+	// Each result has already consumed its sidechain meter delta. Preserve
+	// both when folding follow-up turns together, without mutating either.
+	if first.Sidechain != nil || second.Sidechain != nil {
+		child := &core.SidechainUsage{ByModel: make(map[string]core.TokenUsage)}
+		models := make(map[string]bool)
+		for _, usage := range []*core.SidechainUsage{first.Sidechain, second.Sidechain} {
+			if usage == nil {
+				continue
+			}
+			child.Requests += usage.Requests
+			child.InputTokens += usage.InputTokens
+			child.OutputTokens += usage.OutputTokens
+			child.CacheCreationInputTokens += usage.CacheCreationInputTokens
+			child.CacheReadInputTokens += usage.CacheReadInputTokens
+			child.ReasoningOutputTokens += usage.ReasoningOutputTokens
+			for _, model := range usage.Models {
+				models[model] = true
+			}
+			for model, amount := range usage.ByModel {
+				total := child.ByModel[model]
+				total.Add(amount)
+				child.ByModel[model] = total
+			}
+		}
+		for model := range models {
+			child.Models = append(child.Models, model)
+		}
+		sort.Strings(child.Models)
+		merged.Sidechain = child
+	}
+	return merged
 }
 
 // CancelTurn implements core.AgentSessionCanceller. Asks Claude Code

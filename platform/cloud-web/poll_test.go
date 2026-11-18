@@ -157,12 +157,12 @@ func TestCardActionPermAllow(t *testing.T) {
 	p.handler = func(_ core.Platform, msg *core.Message) { done <- msg }
 
 	raw, _ := json.Marshal(wireCardAction{
-		Type: "card_action", SessionKey: "cloud_web:c:u", Action: "perm:allow", ReplyCtx: "ctx",
+		Type: "card_action", SessionKey: "cloud_web:c:u", Action: "perm:prompt-current:allow", ReplyCtx: "ctx",
 	})
 	p.handleCardAction(raw)
 	select {
 	case msg := <-done:
-		if msg.Content != "allow" {
+		if msg.Content != "perm:prompt-current:allow" {
 			t.Fatalf("content = %q, want allow", msg.Content)
 		}
 		if !msg.IsPermissionResponse {

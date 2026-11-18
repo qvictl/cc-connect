@@ -450,18 +450,7 @@ func (p *Platform) handleMessage(w http.ResponseWriter, r *http.Request, msgSig,
 
 	case "event":
 		if msg.Event == "template_card_event" {
-			slog.Info("wecom: template_card_event received", "user", msg.FromUserName, "event_key", msg.EventKey, "task_id", msg.TaskId)
-			responseText, isPerm := parseWeComPermissionResponse(msg.EventKey)
-			go p.handler(p, &core.Message{
-				SessionKey:           sessionKey,
-				Platform:             "wecom",
-				MessageID:            strconv.FormatInt(msg.MsgId, 10),
-				UserID:               msg.FromUserName,
-				UserName:             p.resolveUserName(msg.FromUserName),
-				Content:              responseText,
-				ReplyCtx:             rctx,
-				IsPermissionResponse: isPerm,
-			})
+			p.handleTemplateCardEvent(msg)
 		} else {
 			slog.Debug("wecom: unhandled event type", "event", msg.Event)
 		}
@@ -472,6 +461,24 @@ func (p *Platform) handleMessage(w http.ResponseWriter, r *http.Request, msgSig,
 			"msg_id", msg.MsgId,
 			"from_user", msg.FromUserName)
 	}
+}
+
+// Called after the HTTP envelope has been authenticated and decrypted.
+func (p *Platform) handleTemplateCardEvent(msg xmlMessage) {
+	if msg.Event != "template_card_event" || strings.TrimSpace(msg.FromUserName) == "" || !core.AllowList(p.allowFrom, msg.FromUserName) || p.handler == nil {
+		return
+	}
+	responseText, isPerm := parseWeComPermissionResponse(msg.EventKey)
+	if strings.HasPrefix(strings.TrimSpace(msg.EventKey), "perm:") && !isPerm {
+		return
+	}
+	go p.handler(p, &core.Message{
+		SessionKey: fmt.Sprintf("wecom:%s", msg.FromUserName),
+		Platform: "wecom", MessageID: strconv.FormatInt(msg.MsgId, 10),
+		UserID: msg.FromUserName, UserName: p.resolveUserName(msg.FromUserName),
+		Content: responseText, ReplyCtx: replyContext{userID: msg.FromUserName},
+		IsPermissionResponse: isPerm,
+	})
 }
 
 func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {

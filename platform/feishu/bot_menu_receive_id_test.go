@@ -9,7 +9,6 @@ import (
 	"sync"
 	"testing"
 
-	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkapplication "github.com/larksuite/oapi-sdk-go/v3/service/application/v6"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
@@ -122,6 +121,7 @@ func TestBotMenuReply_SendsCreateMessageWithOpenIDType(t *testing.T) {
 		receiveIDType string
 		receiveID     string
 		msgType       string
+		uuid          string
 	}
 	var mu sync.Mutex
 	var sent []sentCreateMessage
@@ -131,12 +131,13 @@ func TestBotMenuReply_SendsCreateMessageWithOpenIDType(t *testing.T) {
 		switch {
 		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"code": 0, "msg": "ok", "expire": 7200, "tenant_access_token": "t-test",
+				"code": 0, "msg": "ok", "expire": 7200, "tenant_access_token": fixedTestTenantToken,
 			})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/open-apis/im/v1/messages"):
 			var body struct {
 				ReceiveID string `json:"receive_id"`
 				MsgType   string `json:"msg_type"`
+				UUID      string `json:"uuid"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			mu.Lock()
@@ -144,6 +145,7 @@ func TestBotMenuReply_SendsCreateMessageWithOpenIDType(t *testing.T) {
 				receiveIDType: r.URL.Query().Get("receive_id_type"),
 				receiveID:     body.ReceiveID,
 				msgType:       body.MsgType,
+				uuid:          body.UUID,
 			})
 			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -186,11 +188,29 @@ func TestBotMenuReply_SendsCreateMessageWithOpenIDType(t *testing.T) {
 		t.Fatalf("Send(chat) error = %v", err)
 	}
 
+	// Raw feedback/answer cards must retain both bot-menu routing and deduplication.
+	if _, err := p.SendRawCard(context.Background(), dispatched.ReplyCtx, json.RawMessage(`{"elements":[]}`), "TEST_ONLY_FIXED_MENU_CARD_UUID"); err != nil {
+		t.Fatalf("SendRawCard(menu) error = %v", err)
+	}
+
+	// The #2246 reply/feedback paths must preserve the same ID namespace,
+	// even with feedback disabled (the default). No feedback command runs.
+	if err := p.Send(context.Background(), dispatched.ReplyCtx, "**TEST_ONLY menu markdown**"); err != nil {
+		t.Fatalf("Send(menu markdown) error = %v", err)
+	}
+	if _, err := p.sendCardID(context.Background(), dispatched.ReplyCtx.(replyContext), `{"elements":[]}`); err != nil {
+		t.Fatalf("sendCardID(menu) error = %v", err)
+	}
+	unionCtx := replyContext{chatID: "on_TEST_ONLY_union", receiveIDType: "union_id"}
+	if _, err := p.sendCardID(context.Background(), unionCtx, `{"elements":[]}`); err != nil {
+		t.Fatalf("sendCardID(union) error = %v", err)
+	}
+
 	mu.Lock()
 	got := append([]sentCreateMessage(nil), sent...)
 	mu.Unlock()
-	if len(got) != 2 {
-		t.Fatalf("CreateMessage calls = %d, want 2: %+v", len(got), got)
+	if len(got) != 6 {
+		t.Fatalf("CreateMessage calls = %d, want 6: %+v", len(got), got)
 	}
 	if got[0].receiveIDType != "open_id" {
 		t.Errorf("bot menu receive_id_type = %q, want open_id", got[0].receiveIDType)
@@ -204,21 +224,34 @@ func TestBotMenuReply_SendsCreateMessageWithOpenIDType(t *testing.T) {
 	if got[1].receiveID != "oc_chat123" {
 		t.Errorf("chat receive_id = %q, want oc_chat123", got[1].receiveID)
 	}
+	for _, i := range []int{3, 4} {
+		if got[i].receiveIDType != "open_id" || got[i].receiveID != openID || got[i].msgType != larkim.MsgTypeInteractive {
+			t.Errorf("reply/feedback card lost menu route: %+v", got[i])
+		}
+	}
+	if got[5].receiveIDType != "union_id" || got[5].receiveID != unionCtx.chatID {
+		t.Errorf("feedback card lost union route: %+v", got[5])
+	}
+	if got[2].receiveIDType != "open_id" || got[2].receiveID != openID || got[2].uuid != "TEST_ONLY_FIXED_MENU_CARD_UUID" {
+		t.Errorf("raw card lost menu route or deduplication: %+v", got[2])
+	}
 }
 
 func newFeishuReceiveIDTestPlatform(t *testing.T, name string) *Platform {
 	t.Helper()
-	return newFeishuReceiveIDTestPlatformAt(t, name, lark.FeishuBaseUrl)
+	return newFeishuReceiveIDTestPlatformAt(t, name, stubOpenAPIDomain(t))
 }
 
 func newFeishuReceiveIDTestPlatformAt(t *testing.T, name, domain string) *Platform {
 	t.Helper()
 	p, err := newPlatform(name, domain, map[string]any{
-		"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": false,
+		"app_id": "cli_xxx", "app_secret": fixedTestAppSecret, "enable_feishu_card": false,
 		"domain": domain,
 	})
 	if err != nil {
 		t.Fatalf("newPlatform(%s) error = %v", name, err)
 	}
-	return p.(*Platform)
+	ip := p.(*Platform)
+	bindFixturePlatform(t, ip, domain)
+	return ip
 }

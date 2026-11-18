@@ -41,7 +41,7 @@ func TestQuotedInteractiveCardPreservesLinks(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
 				case "/open-apis/auth/v3/tenant_access_token/internal":
-					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "expire": 7200, "tenant_access_token": "quoted-card-token"})
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "expire": 7200, "tenant_access_token": fixedTestTenantToken})
 				case "/open-apis/im/v1/messages/om_quoted_card":
 					if r.URL.Query().Get("card_msg_content_type") != "raw_card_content" {
 						t.Error("quote must request raw_card_content")
@@ -53,7 +53,8 @@ func TestQuotedInteractiveCardPreservesLinks(t *testing.T) {
 				}
 			}))
 			defer srv.Close()
-			p := &Platform{client: lark.NewClient("cli_quoted_card", "test-secret", lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(srv.Client()))}
+			p := &Platform{client: lark.NewClient("cli_quoted_card", fixedTestAppSecret, lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)))}
+			p.replayClient = p.client
 			msg := p.fetchSingleMessage(context.Background(), "om_quoted_card")
 			if msg == nil || !strings.Contains(msg.text, tc.wantContains) {
 				t.Fatalf("quoted card = %+v, want contains %q", msg, tc.wantContains)

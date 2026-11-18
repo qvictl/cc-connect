@@ -164,7 +164,7 @@ func TestWithTransientRetry_RespectsContextCancellation(t *testing.T) {
 
 func TestReplyRetriesOnTransientNetworkError(t *testing.T) {
 	const appID = "cli_transient_retry"
-	const appSecret = "secret"
+	const appSecret = fixedTestAppSecret
 
 	var replyCalls atomic.Int32
 
@@ -176,7 +176,7 @@ func TestReplyRetriesOnTransientNetworkError(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "valid-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case strings.HasSuffix(r.URL.Path, "/reply"):
 			call := replyCalls.Add(1)
@@ -212,12 +212,12 @@ func TestReplyRetriesOnTransientNetworkError(t *testing.T) {
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		replayClient: lark.NewClient(appID, appSecret,
 			lark.WithEnableTokenCache(false),
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 	}
 
@@ -232,7 +232,7 @@ func TestReplyRetriesOnTransientNetworkError(t *testing.T) {
 
 func TestCreateMessageRetriesOnTransientNetworkError(t *testing.T) {
 	const appID = "cli_transient_create"
-	const appSecret = "secret"
+	const appSecret = fixedTestAppSecret
 
 	var createCalls atomic.Int32
 
@@ -244,7 +244,7 @@ func TestCreateMessageRetriesOnTransientNetworkError(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "valid-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case r.URL.Path == "/open-apis/im/v1/messages":
 			call := createCalls.Add(1)
@@ -278,12 +278,12 @@ func TestCreateMessageRetriesOnTransientNetworkError(t *testing.T) {
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		replayClient: lark.NewClient(appID, appSecret,
 			lark.WithEnableTokenCache(false),
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 	}
 
@@ -298,7 +298,7 @@ func TestCreateMessageRetriesOnTransientNetworkError(t *testing.T) {
 
 func TestReplyDoesNotRetryOnNonTransientAPIError(t *testing.T) {
 	const appID = "cli_no_transient_retry"
-	const appSecret = "secret"
+	const appSecret = fixedTestAppSecret
 
 	var replyCalls atomic.Int32
 
@@ -310,7 +310,7 @@ func TestReplyDoesNotRetryOnNonTransientAPIError(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "valid-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case strings.HasSuffix(r.URL.Path, "/reply"):
 			replyCalls.Add(1)
@@ -332,12 +332,12 @@ func TestReplyDoesNotRetryOnNonTransientAPIError(t *testing.T) {
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		replayClient: lark.NewClient(appID, appSecret,
 			lark.WithEnableTokenCache(false),
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 	}
 
@@ -356,7 +356,7 @@ func TestReplyDoesNotRetryOnNonTransientAPIError(t *testing.T) {
 
 func TestPatchMessageRetriesOnTransientError(t *testing.T) {
 	const appID = "cli_patch_retry"
-	const appSecret = "secret"
+	const appSecret = fixedTestAppSecret
 
 	var patchCalls atomic.Int32
 
@@ -368,7 +368,7 @@ func TestPatchMessageRetriesOnTransientError(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "valid-token",
+				"tenant_access_token": fixedTestTenantToken,
 			})
 		case strings.Contains(r.URL.Path, "/messages/") && r.Method == http.MethodPatch:
 			call := patchCalls.Add(1)
@@ -403,12 +403,12 @@ func TestPatchMessageRetriesOnTransientError(t *testing.T) {
 		useInteractiveCard: true,
 		client: lark.NewClient(appID, appSecret,
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		replayClient: lark.NewClient(appID, appSecret,
 			lark.WithEnableTokenCache(false),
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 	}
 
@@ -427,7 +427,7 @@ func TestReplyTransientRetryThenTokenRefresh(t *testing.T) {
 	// Scenario: first call gets connection reset (transient), retry gets
 	// invalid token error, which triggers token refresh, then succeeds.
 	const appID = "cli_combined_retry"
-	const appSecret = "secret"
+	const appSecret = fixedTestAppSecret
 
 	var authCalls, replyCalls atomic.Int32
 
@@ -440,7 +440,7 @@ func TestReplyTransientRetryThenTokenRefresh(t *testing.T) {
 				"code":                0,
 				"msg":                 "success",
 				"expire":              7200,
-				"tenant_access_token": "fresh-token",
+				"tenant_access_token": "TEST_ONLY_FIXED_FEISHU_FRESH_TOKEN",
 			})
 		case strings.HasSuffix(r.URL.Path, "/reply"):
 			call := replyCalls.Add(1)
@@ -483,12 +483,12 @@ func TestReplyTransientRetryThenTokenRefresh(t *testing.T) {
 		appSecret:    appSecret,
 		client: lark.NewClient(appID, appSecret,
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 		replayClient: lark.NewClient(appID, appSecret,
 			lark.WithEnableTokenCache(false),
 			lark.WithOpenBaseUrl(srv.URL),
-			lark.WithHttpClient(srv.Client()),
+			lark.WithHttpClient(fixtureHTTPClient(t, srv.URL)),
 		),
 	}
 
@@ -545,7 +545,7 @@ func TestPatchMessageRetriesInternalServerError(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
-					writeJSON(t, w, map[string]any{"code": 0, "expire": 7200, "tenant_access_token": "test-token"})
+					writeJSON(t, w, map[string]any{"code": 0, "expire": 7200, "tenant_access_token": "TEST_ONLY_FIXED_FEISHU_TENANT_TOKEN"})
 					return
 				}
 				if r.Method != http.MethodPatch || !strings.Contains(r.URL.Path, "/messages/") {
@@ -562,9 +562,10 @@ func TestPatchMessageRetriesInternalServerError(t *testing.T) {
 			defer srv.Close()
 			appID := "cli_patch_internal_" + tt.name
 			p := &Platform{
-				platformName: "feishu", appID: appID, appSecret: "test-secret", domain: srv.URL,
+				platformName: "feishu", appID: appID, appSecret: fixedTestAppSecret, domain: srv.URL,
 				useInteractiveCard: true,
-				client:             lark.NewClient(appID, "test-secret", lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(srv.Client())),
+				client:             lark.NewClient(appID, fixedTestAppSecret, lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(fixtureHTTPClient(t, srv.URL))),
+				replayClient: lark.NewClient(appID, fixedTestAppSecret, lark.WithEnableTokenCache(false), lark.WithOpenBaseUrl(srv.URL), lark.WithHttpClient(fixtureHTTPClient(t, srv.URL))),
 			}
 			err := p.UpdateMessage(context.Background(), &feishuPreviewHandle{messageID: "om_existing_card"}, "latest progress")
 			if (err != nil) != tt.wantErr || calls.Load() != tt.wantCalls {

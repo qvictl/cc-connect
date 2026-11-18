@@ -1,6 +1,8 @@
 package core
 
 import (
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -59,7 +61,7 @@ func TestI18n_AllKeysHaveEnglish(t *testing.T) {
 
 func TestDetectLanguage(t *testing.T) {
 	tests := []struct {
-		text    string
+		text     string
 		wantLang Language
 	}{
 		// Japanese Hiragana
@@ -165,5 +167,45 @@ func TestIsJapanese(t *testing.T) {
 	}
 	if isJapanese('a') {
 		t.Error("ASCII 'a' should not be Japanese")
+	}
+}
+
+func TestI18n_DeleteInUseDeniedExplainsRecovery(t *testing.T) {
+	remedies := map[Language]string{
+		LangEnglish:            "Switch that chat to another session first, then retry.",
+		LangChinese:            "请先在该对话中切换到其他会话，再重试。",
+		LangTraditionalChinese: "請先在該對話中切換到其他會話，再重試。",
+		LangJapanese:           "そのチャットで別のセッションに切り替えてから、再試行してください。",
+		LangSpanish:            "Cambie ese chat a otra sesión y vuelva a intentarlo.",
+	}
+	for lang, remedy := range remedies {
+		t.Run(string(lang), func(t *testing.T) {
+			got := NewI18n(lang).Tf(MsgDeleteInUseDenied, "session-name")
+			if !strings.Contains(got, "session-name") || !strings.Contains(got, remedy) {
+				t.Fatalf("refusal = %q, want session name and recovery guidance %q", got, remedy)
+			}
+		})
+	}
+}
+
+func TestI18n_ProviderHelpUsesFieldDescriptions(t *testing.T) {
+	credentialExample := regexp.MustCompile(`\b[a-zA-Z]+-x{3,}\b`)
+	for _, lang := range []Language{LangEnglish, LangChinese, LangTraditionalChinese, LangJapanese, LangSpanish} {
+		t.Run(string(lang), func(t *testing.T) {
+			i := NewI18n(lang)
+			usage := i.T(MsgProviderAddUsage)
+			for _, field := range []string{"name", "api_key", "base_url", "model"} {
+				if !strings.Contains(usage, "`"+field+"`") {
+					t.Errorf("provider help does not describe JSON field %q", field)
+				}
+			}
+			prompt := i.Tf(MsgProviderAddApiKeyPrompt, "provider-name")
+			if !strings.Contains(prompt, "provider-name") {
+				t.Error("provider prompt lost the selected provider name")
+			}
+			if credentialExample.MatchString(usage) || credentialExample.MatchString(prompt) {
+				t.Error("provider help includes a credential-shaped example")
+			}
+		})
 	}
 }

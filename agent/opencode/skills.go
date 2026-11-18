@@ -401,7 +401,11 @@ func readOpencodeConfigFile(path string) (json.RawMessage, error) {
 }
 
 func parseOpencodeJSONC(raw string) (json.RawMessage, error) {
-	stripped := stripOpencodeJSONComments(raw)
+	stripped, err := stripOpencodeJSONComments(raw)
+	if err != nil {
+		return nil, err
+	}
+	stripped = stripOpencodeJSONTrailingCommas(stripped)
 	var v json.RawMessage
 	if err := json.Unmarshal([]byte(stripped), &v); err != nil {
 		return nil, err
@@ -409,7 +413,7 @@ func parseOpencodeJSONC(raw string) (json.RawMessage, error) {
 	return v, nil
 }
 
-func stripOpencodeJSONComments(s string) string {
+func stripOpencodeJSONComments(s string) (string, error) {
 	var b strings.Builder
 	inStr := false
 	escaped := false
@@ -435,15 +439,24 @@ func stripOpencodeJSONComments(s string) string {
 			continue
 		}
 		if c == '/' && i+1 < len(s) && s[i+1] == '/' {
+			// Comments are whitespace, not empty text: never join two tokens.
+			b.WriteByte(' ')
 			for i < len(s) && s[i] != '\n' {
 				i++
 			}
 			continue
 		}
 		if c == '/' && i+1 < len(s) && s[i+1] == '*' {
+			b.WriteByte(' ')
 			i += 2
 			for i+1 < len(s) && (s[i] != '*' || s[i+1] != '/') {
+				if s[i] == '\n' || s[i] == '\r' {
+					b.WriteByte(s[i])
+				}
 				i++
+			}
+			if i+1 >= len(s) {
+				return "", fmt.Errorf("opencode: unterminated JSONC block comment")
 			}
 			i += 2
 			continue
@@ -451,7 +464,44 @@ func stripOpencodeJSONComments(s string) string {
 		b.WriteByte(c)
 		i++
 	}
-	return b.String()
+	return b.String(), nil
+}
+
+// Remove only a trailing separator after a value, outside strings. JSON still
+// validates the result, so missing values and repeated commas remain errors.
+func stripOpencodeJSONTrailingCommas(s string) string {
+	out := []byte(s)
+	inStr, escaped := false, false
+	previous := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inStr = false
+			}
+			previous = c
+			continue
+		}
+		if c == '"' {
+			inStr = true
+		} else if c == ',' && previous != 0 && previous != '{' && previous != '[' && previous != ':' && previous != ',' {
+			j := i + 1
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\r' || s[j] == '\n') {
+				j++
+			}
+			if j < len(s) && (s[j] == '}' || s[j] == ']') {
+				out[i] = ' '
+			}
+		}
+		if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+			previous = c
+		}
+	}
+	return string(out)
 }
 
 type opencodeFileConfig struct {

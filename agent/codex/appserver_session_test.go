@@ -353,6 +353,40 @@ func TestAppServerSession_ReadLoopHandlesLargeResponseLine(t *testing.T) {
 	s.wg.Wait()
 }
 
+func TestAppServerSession_StderrLoopDrainsPastOverlongLine(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := &appServerSession{ctx: ctx}
+	r, w := io.Pipe()
+	s.wg.Add(1)
+	go s.stderrLoop(r)
+
+	// io.Pipe is unbuffered, so every write below only returns once the loop
+	// has consumed it; a loop that stopped reading would block the writer.
+	written := make(chan error, 1)
+	go func() {
+		if _, err := w.Write([]byte(strings.Repeat("x", 2*1024*1024) + "\n")); err != nil {
+			written <- err
+			return
+		}
+		_, err := w.Write([]byte("after overlong line\n"))
+		written <- err
+	}()
+
+	select {
+	case err := <-written:
+		if err != nil {
+			t.Fatalf("write stderr: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stderrLoop stopped draining after an over-long line")
+	}
+
+	_ = w.Close()
+	s.wg.Wait()
+}
+
 func TestAppServerSession_ResumeDoesNotRequestExtendedHistory(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -386,6 +420,9 @@ func TestAppServerSession_ResumeDoesNotRequestExtendedHistory(t *testing.T) {
 	}
 	if got := request.Params["persistExtendedHistory"]; got != false {
 		t.Fatalf("persistExtendedHistory = %#v, want false", got)
+	}
+	if got := request.Params["excludeTurns"]; got != true {
+		t.Fatalf("excludeTurns = %#v, want true", got)
 	}
 
 	s.handleResponse(rpcResponseEnvelope{
@@ -696,6 +733,75 @@ func TestAppServerSession_HandleRequestUserInputEmitsAskQuestion(t *testing.T) {
 	}
 	if stdin.String() != "" {
 		t.Fatalf("request_user_input should not write before the answer, got %q", stdin.String())
+	}
+}
+
+func TestAppServerSession_ApprovalRequiresDecisionAndPreservesRPCID(t *testing.T) {
+	for _, method := range []string{"item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval"} {
+		for _, behavior := range []string{"allow", "deny"} {
+			t.Run(method+"/"+behavior, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				stdin := &lockedWriteCloser{}
+				s := &appServerSession{ctx: ctx, stdin: stdin, events: make(chan core.Event, 4), pendingApprovals: make(map[string]chan core.PermissionResult)}
+				s.handleServerRequest(serverRequestProbe(t, `42`, method, map[string]any{
+					"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1",
+					"command": "echo approval-test", "cwd": "/workspace", "reason": "approval-test",
+					"permissions": map[string]any{"network": map[string]any{"enabled": true}},
+				}))
+				var event core.Event
+				select {
+				case event = <-s.events:
+				case <-time.After(time.Second):
+					t.Fatal("approval event was not emitted")
+				}
+				if event.Type != core.EventPermissionRequest || event.RequestID != "42" || event.ToolName == "AskUserQuestion" || len(event.Questions) != 0 {
+					t.Fatalf("approval was misclassified: %+v", event)
+				}
+				if stdin.String() != "" {
+					t.Fatal("approval was answered before a user decision")
+				}
+				if err := s.RespondPermission("not-pending", core.PermissionResult{Behavior: "allow"}); err == nil {
+					t.Fatal("unknown approval ID was accepted")
+				}
+				if err := s.RespondPermission(event.RequestID, core.PermissionResult{Behavior: behavior}); err != nil {
+					t.Fatal(err)
+				}
+				var response struct {
+					ID     int `json:"id"`
+					Result struct {
+						Decision    string         `json:"decision"`
+						Permissions map[string]any `json:"permissions"`
+						Scope       string         `json:"scope"`
+					} `json:"result"`
+				}
+				if err := json.Unmarshal([]byte(waitForWrittenJSONLine(t, stdin)), &response); err != nil {
+					t.Fatal(err)
+				}
+				if response.ID != 42 {
+					t.Fatalf("RPC ID = %d, want 42", response.ID)
+				}
+				if method == "item/permissions/requestApproval" {
+					if behavior == "allow" && (len(response.Result.Permissions) != 1 || response.Result.Scope != "turn") {
+						t.Fatalf("unexpected permission grant: %+v", response.Result)
+					}
+					if behavior == "deny" && len(response.Result.Permissions) != 0 {
+						t.Fatalf("denied permissions were granted: %+v", response.Result)
+					}
+				} else {
+					want := "decline"
+					if behavior == "allow" {
+						want = "accept"
+					}
+					if response.Result.Decision != want {
+						t.Fatalf("decision = %q, want %q", response.Result.Decision, want)
+					}
+				}
+				if err := s.RespondPermission(event.RequestID, core.PermissionResult{Behavior: "allow"}); err == nil {
+					t.Fatal("completed approval accepted a second decision")
+				}
+			})
+		}
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chenhg5/cc-connect/core"
+
 	callback "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 )
 
@@ -14,6 +16,9 @@ import (
 // that made every group member's click land in the requester's session.
 func cardActionEventWithKey(openID, action, sessionKey string) *callback.CardActionTriggerEvent {
 	value := map[string]any{"action": action}
+	if strings.HasPrefix(action, "perm:") {
+		value["perm_request_id"] = "owner-prompt"
+	}
 	if sessionKey != "" {
 		value["session_key"] = sessionKey
 	}
@@ -42,6 +47,7 @@ func TestRequesterFromSessionKey(t *testing.T) {
 		{"feishu:oc_chat:thread:omt_x", "", false},
 		{"feishu:oc_chat", "", false},
 		{"", "", false},
+		{"feishu:oc_chat:tenant-user", "", false},
 	}
 	for _, c := range cases {
 		id, ok := requesterFromSessionKey(c.sessionKey)
@@ -55,7 +61,7 @@ func TestRequesterFromSessionKey(t *testing.T) {
 // no dispatch into the requester's session, no answer consumed. The clicker
 // only gets a toast; the original card stays.
 func TestOnCardAction_NonRequesterAskqClickRejected(t *testing.T) {
-	ip, msgCh := newAllowFromTestPlatform(t, "*")
+	ip, msgCh := newOwnerGateTestPlatform("*")
 
 	resp, err := ip.onCardAction(cardActionEventWithKey("ou_intruder", "askq:0:1", "feishu:oc_test_chat:ou_owner"))
 	if err != nil {
@@ -73,12 +79,12 @@ func TestOnCardAction_NonRequesterAskqClickRejected(t *testing.T) {
 	waitNoMessage(t, msgCh, 150*time.Millisecond, "non-requester askq click")
 }
 
-// The requester's own click keeps working end to end: dispatch reaches the
-// engine and the callback returns the replacement card. Regression for the
+// The requester's own click reaches the stub handler and returns a card.
+// This adapter test does not prove Engine acceptance. Regression for the
 // "button not greyed out after click" report: the replacement card the
 // clicker gets back must carry no live buttons.
 func TestOnCardAction_RequesterAskqClickDispatchesWithButtonlessCard(t *testing.T) {
-	ip, msgCh := newAllowFromTestPlatform(t, "*")
+	ip, msgCh := newOwnerGateTestPlatform("*")
 
 	resp, err := ip.onCardAction(cardActionEventWithKey("ou_owner", "askq:0:1", "feishu:oc_test_chat:ou_owner"))
 	if err != nil {
@@ -110,7 +116,7 @@ func TestOnCardAction_RequesterAskqClickDispatchesWithButtonlessCard(t *testing.
 // Same hole guarded on the permission card: a stranger clicking "Allow"
 // must not feed an allow into the requester's pending permission.
 func TestOnCardAction_NonRequesterPermClickRejected(t *testing.T) {
-	ip, msgCh := newAllowFromTestPlatform(t, "*")
+	ip, msgCh := newOwnerGateTestPlatform("*")
 
 	resp, err := ip.onCardAction(cardActionEventWithKey("ou_intruder", "perm:allow", "feishu:oc_test_chat:ou_owner"))
 	if err != nil {
@@ -126,32 +132,95 @@ func TestOnCardAction_NonRequesterPermClickRejected(t *testing.T) {
 }
 
 func TestOnCardAction_RequesterPermClickDispatches(t *testing.T) {
-	ip, msgCh := newAllowFromTestPlatform(t, "*")
+	ip, msgCh := newOwnerGateTestPlatform("*")
 
 	resp, err := ip.onCardAction(cardActionEventWithKey("ou_owner", "perm:allow", "feishu:oc_test_chat:ou_owner"))
 	if err != nil {
 		t.Fatalf("onCardAction() error = %v", err)
 	}
 	msg := waitAnyMessage(t, msgCh, 3*time.Second, "requester perm click")
-	if msg.Content != "allow" {
-		t.Errorf("dispatched content = %q, want %q", msg.Content, "allow")
+	if msg.Content != "perm:owner-prompt:allow" {
+		t.Errorf("dispatched content = %q, want %q", msg.Content, "perm:owner-prompt:allow")
 	}
 	if !msg.IsPermissionResponse {
 		t.Error("IsPermissionResponse = false, want true")
 	}
-	if resp == nil || resp.Card == nil {
-		t.Fatal("response card = nil, want replacement card")
+	if resp != nil && resp.Card != nil {
+		t.Fatal("permission callback must wait for engine acceptance before success")
 	}
 }
 
 // Thread-isolated sessions are shared by design: the key carries no single
 // requester, so the gate must stay open there (click routes as before).
 func TestOnCardAction_ThreadSessionAskqNotGated(t *testing.T) {
-	ip, msgCh := newAllowFromTestPlatform(t, "*")
+	ip, msgCh := newOwnerGateTestPlatform("*")
 
 	_, err := ip.onCardAction(cardActionEventWithKey("ou_teammate", "askq:0:1", "feishu:oc_test_chat:root:om_root"))
 	if err != nil {
 		t.Fatalf("onCardAction() error = %v", err)
 	}
 	waitAnyMessage(t, msgCh, 3*time.Second, "thread-session askq click")
+}
+
+// Bare adapter: no SDK client, credentials, transport, server or connection.
+// Preseed both name caches so callback dispatch never performs lookup IO.
+func newOwnerGateTestPlatform(allowFrom string) (*Platform, chan *core.Message) {
+	p := &Platform{platformName: "feishu", allowFrom: allowFrom}
+	for _, id := range []string{"ou_owner", "ou_intruder", "ou_teammate"} {
+		p.userNameCache.Store(id, "Fixture participant")
+	}
+	p.chatNameCache.Store("oc_test_chat", "Fixture chat")
+	messages := make(chan *core.Message, 4)
+	p.handler = func(_ core.Platform, msg *core.Message) { messages <- msg }
+	return p, messages
+}
+
+func TestOwnerGatePreservesAllowlistMissingOperatorAndBinding(t *testing.T) {
+	for _, tc := range []struct { name, allowFrom, action, binding string; missingOperator bool }{
+		{"disallowed-owner", "ou_teammate", "askq:0:1", "", false},
+		{"missing-operator-question", "*", "askq:0:1", "", true},
+		{"missing-operator-permission", "*", "perm:allow", "owner-prompt", true},
+		{"missing-binding", "*", "perm:allow", "", false},
+		{"malformed-binding", "*", "perm:allow", "bad:binding", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, messages := newOwnerGateTestPlatform(tc.allowFrom)
+			event := cardActionEventWithKey("ou_owner", tc.action, "feishu:oc_test_chat:ou_owner")
+			event.Event.Action.Value["perm_request_id"] = tc.binding
+			if tc.missingOperator { event.Event.Operator = nil }
+			resp, err := p.onCardAction(event)
+			if err != nil || (resp != nil && resp.Card != nil) { t.Fatalf("unexpected success: %#v, %v", resp, err) }
+			waitNoMessage(t, messages, 100*time.Millisecond, tc.name)
+		})
+	}
+}
+
+func TestOwnerGatePreservesNavigationActualClicker(t *testing.T) {
+	for _, key := range []string{"feishu:oc_test_chat:ou_owner", "feishu:oc_test_chat", "feishu:oc_test_chat:root:om_root"} {
+		for _, action := range []string{"nav:/help", "act:/provider b"} {
+			p, messages := newOwnerGateTestPlatform("*")
+			var clicker, routedKey string
+			p.SetUserAwareCardNavigationHandler(func(action, sessionKey, userID string) *core.Card {
+				clicker, routedKey = userID, sessionKey
+				return core.NewCard().Markdown("navigation").Build()
+			})
+			resp, err := p.onCardAction(cardActionEventWithKey("ou_teammate", action, key))
+			if err != nil || resp == nil || resp.Card == nil || clicker != "ou_teammate" || routedKey != key {
+				t.Fatalf("navigation owner gate regression: %q %q %#v %v", clicker, routedKey, resp, err)
+			}
+			select { case msg := <-messages: t.Fatalf("navigation dispatched answer: %+v", msg); default: }
+		}
+	}
+}
+
+func TestOwnerGateSharedPermissionRetainsBinding(t *testing.T) {
+	for _, key := range []string{"feishu:oc_test_chat", "feishu:oc_test_chat:root:om_root", "feishu:oc_test_chat:thread:omt_x"} {
+		p, messages := newOwnerGateTestPlatform("*")
+		resp, err := p.onCardAction(cardActionEventWithKey("ou_teammate", "perm:deny", key))
+		if err != nil || (resp != nil && resp.Card != nil) { t.Fatalf("premature success: %#v %v", resp, err) }
+		msg := waitAnyMessage(t, messages, time.Second, "shared permission")
+		if msg.Content != "perm:owner-prompt:deny" || !msg.IsPermissionResponse || msg.UserID != "ou_teammate" || msg.SessionKey != key {
+			t.Fatalf("lost binding or clicker: %+v", msg)
+		}
+	}
 }

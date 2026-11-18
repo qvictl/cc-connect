@@ -2,8 +2,6 @@ package helper
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -31,11 +29,16 @@ import (
 // all exercised exactly as in a deployment. Replies are recorded on the same
 // MockPlatform, so the scenarios and assertions are unchanged.
 //
-// CC_BLACKBOX_BINARY points at a prebuilt binary (for example the release
-// candidate in dist/); otherwise the current tree is built once per test
-// process with -tags no_web.
+// Only the current source tree is built, with the test-only loopback tag.
+// Prebuilt binaries are rejected: build tags in metadata cannot prove that
+// an arbitrary or older binary implements the loopback-only listener.
 
-const binaryProject = "blackbox"
+const (
+	binaryProject   = "blackbox"
+	binaryBuildTags = "no_web,cc_blackbox_loopback"
+	// This is fixture data, never production authentication.
+	binaryBridgeToken = "TEST_ONLY_BLACKBOX_BRIDGE_TOKEN"
+)
 
 var (
 	buildOnce sync.Once
@@ -48,15 +51,8 @@ const binaryStartTimeout = 60 * time.Second
 
 func binaryPath(t *testing.T) string {
 	t.Helper()
-	if p := os.Getenv("CC_BLACKBOX_BINARY"); p != "" {
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			t.Fatalf("blackbox: CC_BLACKBOX_BINARY: %v", err)
-		}
-		if _, err := os.Stat(abs); err != nil {
-			t.Fatalf("blackbox: CC_BLACKBOX_BINARY %s: %v", abs, err)
-		}
-		return abs
+	if err := validateBinaryOverride(os.Getenv("CC_BLACKBOX_BINARY")); err != nil {
+		t.Fatal(err)
 	}
 	buildOnce.Do(func() {
 		root, err := moduleRoot()
@@ -70,8 +66,14 @@ func binaryPath(t *testing.T) string {
 			return
 		}
 		out := filepath.Join(dir, "cc-connect")
-		cmd := exec.Command("go", "build", "-tags", "no_web", "-o", out, "./cmd/cc-connect")
+		home := filepath.Join(dir, "home")
+		if err := prepareBinaryHome(home); err != nil {
+			buildErr = err
+			return
+		}
+		cmd := exec.Command("go", "build", "-tags", binaryBuildTags, "-o", out, "./cmd/cc-connect")
 		cmd.Dir = root
+		cmd.Env = binaryEnvironment(home, os.Getenv)
 		if msg, err := cmd.CombinedOutput(); err != nil {
 			buildErr = fmt.Errorf("go build ./cmd/cc-connect: %v\n%s", err, msg)
 			return
@@ -84,16 +86,45 @@ func binaryPath(t *testing.T) string {
 	return builtPath
 }
 
+func validateBinaryOverride(path string) error {
+	if path != "" {
+		return fmt.Errorf("blackbox: CC_BLACKBOX_BINARY is unsupported with fixed fixture authentication; build the current loopback-tagged test source instead")
+	}
+	return nil
+}
+
 func moduleRoot() (string, error) {
-	out, err := exec.Command("go", "env", "GOMOD").Output()
+	dir, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("go env GOMOD: %w", err)
+		return "", fmt.Errorf("blackbox: working directory: %w", err)
 	}
-	mod := strings.TrimSpace(string(out))
-	if mod == "" || mod == os.DevNull {
-		return "", fmt.Errorf("go env GOMOD: not inside a module")
+	for {
+		data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if err == nil {
+			if !isCCConnectModule(data) {
+				return "", fmt.Errorf("blackbox: unexpected module in %s", dir)
+			}
+			return dir, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("blackbox: read go.mod: %w", err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("blackbox: not inside the cc-connect module")
+		}
+		dir = parent
 	}
-	return filepath.Dir(mod), nil
+}
+
+func isCCConnectModule(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "module" {
+			return strings.Trim(fields[1], "\"") == "github.com/chenhg5/cc-connect"
+		}
+	}
+	return false
 }
 
 func freePort(t *testing.T) int {
@@ -169,7 +200,7 @@ func newBinaryEnv(t *testing.T, agentType string, agentOpts map[string]any, prof
 	dataDir := filepath.Join(home, ".cc-connect")
 	workDir, _ := agentOpts["work_dir"].(string)
 	bridgePort := freePort(t)
-	token := randomToken(t)
+	token := binaryBridgeToken
 
 	opts := make(map[string]any, len(agentOpts)+1)
 	for k, v := range agentOpts {
@@ -262,7 +293,11 @@ func (e *Env) startBinary() {
 	}
 	cmd := exec.Command(r.bin, "--config", r.cfgPath)
 	cmd.Dir = r.workDir
-	cmd.Env = append(os.Environ(), "HOME="+r.home)
+	if err := prepareBinaryHome(r.home); err != nil {
+		_ = logFile.Close()
+		t.Fatalf("blackbox: prepare private home: %v", err)
+	}
+	cmd.Env = binaryEnvironment(r.home, os.Getenv)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	setProcessGroup(cmd)
@@ -358,15 +393,6 @@ func providerFromEnv(agentType string) map[string]any {
 		p["codex"] = map[string]any{"wire_api": v}
 	}
 	return p
-}
-
-func randomToken(t *testing.T) string {
-	t.Helper()
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		t.Fatalf("blackbox: random token: %v", err)
-	}
-	return hex.EncodeToString(b)
 }
 
 // BridgeURL returns the bridge WebSocket URL of the binary backend ("" for

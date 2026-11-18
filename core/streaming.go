@@ -63,14 +63,17 @@ const (
 
 // ToolStep is one summarized progress row shown in rich progress cards.
 type ToolStep struct {
-	Kind     ToolStepKind // progress row kind; empty means tool for backward compatibility
-	Name     string       // tool name (e.g. "Bash", "Edit")
-	Summary  string       // human-readable summary shown in the card
-	Result   string       // optional tool output/result summary
-	Status   string       // optional tool status (e.g. completed/failed)
-	ExitCode *int         // optional process exit code
-	Success  *bool        // optional success flag
-	Done     bool         // true once a tool result has been observed
+	Timestamp time.Time // time when this progress row was first observed
+	ResultTimestamp time.Time // time when the tool result was first observed
+	ToolCallID string
+	Kind       ToolStepKind // progress row kind; empty means tool for backward compatibility
+	Name       string       // tool name (e.g. "Bash", "Edit")
+	Summary    string       // human-readable summary shown in the card
+	Result     string       // optional tool output/result summary
+	Status     string       // optional tool status (e.g. completed/failed)
+	ExitCode   *int         // optional process exit code
+	Success    *bool        // optional success flag
+	Done       bool         // true once a tool result has been observed
 }
 
 // RichCardSupporter is an optional interface for platforms that can build
@@ -295,10 +298,11 @@ func (sp *streamPreview) flushLocked(text string) {
 // updates the preview message in-place with the accumulated text, and marks
 // the preview as degraded so no further updates are sent.
 // Call this when a permission prompt or other interruption occurs.
-func (sp *streamPreview) freeze() {
+func (sp *streamPreview) freeze() bool {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
 
+	delivered := false
 	sp.cancelTimerLocked()
 
 	if sp.previewMsgID != nil && !sp.degraded {
@@ -312,12 +316,15 @@ func (sp *streamPreview) freeze() {
 				if sp.transform != nil {
 					text = sp.transform(text)
 				}
-				_ = updater.UpdateMessage(sp.ctx, sp.previewMsgID, text)
+				if err := updater.UpdateMessage(sp.ctx, sp.previewMsgID, text); err == nil {
+					delivered = strings.TrimSpace(text) != "" && !isSilentReply(text)
+				}
 			}
 		}
 	}
 
 	sp.degraded = true
+	return delivered
 }
 
 // unfreeze reverses a prior freeze()+detachPreview() so the preview resumes
@@ -418,7 +425,7 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 	if sp.previewMsgID == nil || sp.degraded {
 		if sp.previewMsgID != nil && sp.degraded {
 			// Try to recover degraded preview via UpdateMessage before falling back to delete
-			if finalText != "" {
+			if finalText != "" && !wantsFinalReplyFooter(sp.platform, "") {
 				if updater, ok := sp.platform.(MessageUpdater); ok {
 					if err := updater.UpdateMessage(sp.ctx, sp.previewMsgID, finalText); err == nil {
 						if sp.pendingStatus != "" {
@@ -474,7 +481,7 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 	// via SendPreviewStart (first flush), we must still call UpdateMessage
 	// because it may apply different formatting (e.g. Markdown→HTML for
 	// Telegram).
-	if finalText == sp.lastSentText && sp.lastSentViaUpdate && statusFooter == "" {
+	if finalText == sp.lastSentText && sp.lastSentViaUpdate && !wantsFinalReplyFooter(sp.platform, statusFooter) {
 		slog.Debug("stream preview finish: text unchanged and no footer, skipping",
 			"text_len", len(finalText))
 		return true
@@ -490,7 +497,7 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 
 	// Prefer the structured-footer path when the platform supports it, so the
 	// footer renders with small/dim styling separate from the response body.
-	if statusFooter != "" {
+	if wantsFinalReplyFooter(sp.platform, statusFooter) {
 		if sfu, ok := sp.platform.(StatusFooterUpdater); ok {
 			if err := sfu.UpdateMessageWithStatusFooter(sp.ctx, sp.previewMsgID, finalText, statusFooter); err == nil {
 				slog.Debug("stream preview finish: success via UpdateMessageWithStatusFooter")
@@ -498,6 +505,14 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 			} else {
 				slog.Debug("stream preview finish: UpdateMessageWithStatusFooter failed, falling back", "error", err)
 			}
+		}
+		// A plain update cannot carry feedback controls. Let the caller send
+		// a fresh final reply instead of claiming finalization succeeded.
+		if wantsFinalReplyFooter(sp.platform, "") {
+			if cleaner, ok := sp.platform.(PreviewCleaner); ok {
+				_ = cleaner.DeletePreviewMessage(sp.ctx, sp.previewMsgID)
+			}
+			return false
 		}
 		// Fallback: append inline so the footer is at least visible.
 		finalText = appendReplyFooter(finalText, statusFooter)

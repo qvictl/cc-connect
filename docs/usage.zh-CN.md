@@ -58,6 +58,8 @@ cc-connect 完整功能使用指南。
 
 任务运行时，可用 `/ps`（或 `/btw`）补充指令；会话空闲时会拒绝该命令。送达确认表示桥接已发送请求，不表示 Agent 已完成处理。
 
+在项目上设置 `busy_action = "inject"`（默认 `"queue"`）后，无需再手动输入 `/ps`：任务运行时直接发送的普通消息，在 Agent 支持中途输入时会自动送入当前任务（回复“已补充到当前任务”），目前包括 Claude Code 和 app-server 模式的 Codex（仅文本）。如果消息到达时 Claude Code 已没有剩余的工具调用，它会在当前任务结束后紧接着回应该消息，桥接把两者合并为一条回复送出。其他 Agent，以及无法注入的消息（例如 Agent 仍在启动，或发给 Codex 的附件），仍按原有方式排队，在当前任务完成后处理。
+
 使用 Pi 时，设置 `rpc = true` 可启用原生中途引导：补充内容会在当前助手回合的工具调用结束后、下一次模型调用前送入。如果 Pi 已经结束、桥接仍在发送最终回复，补充内容会启动后续回合。Pi 默认的 JSON 模式保留原有的一次性发送行为，无法向已经运行的进程注入消息。
 
 Codex `/ps` 中途引导要求 app-server 支持 `turn/steer`（codex-cli 0.166.0 或更新版本）。旧版 CLI 会返回方法不支持错误；使用此功能前请升级 Codex CLI。
@@ -151,6 +153,45 @@ cmd = ["/path with spaces/codex", "--profile", "work"]
 
 此功能通过现有 Codex 适配器运行应用内置 CLI。桌面专有工具和共享会话写锁有独立的适配要求，参见 [桌面后端讨论 #651](https://github.com/chenhg5/cc-connect/issues/651) 和 [会话写锁冲突 #1909](https://github.com/chenhg5/cc-connect/issues/1909)。
 
+### Codex 原生 Goal
+
+使用支持 `thread/goal/*` RPC 的 Codex CLI（已用 0.164.0 验证），配置：
+
+```toml
+[projects.agent.options]
+backend = "app_server"
+app_server_url = "stdio"
+```
+
+| 聊天命令 | 操作 |
+|---|---|
+| `/goal`、`/goal show` | 查询目标、原生状态、token 用量/预算和已用秒数 |
+| `/goal set <目标> [--budget N]`、`/goal <目标>` | 设置目标并启动原生续跑 |
+| `/goal edit <目标> [--budget N]` | 编辑目标，保留当前状态和未指定的新预算 |
+| `/goal pause` | 暂停续跑并中断当前轮次 |
+| `/goal resume` | 恢复原生续跑 |
+| `/goal budget N`、`/goal budget none` | 设置正整数 token 预算、取消预算 |
+| `/goal clear` | 清除目标并中断其当前轮次 |
+
+目标最多 4,000 字。完成、阻塞、用量/预算限制及续跑由 Codex 原生机制负责；
+不解析 rollout、不发“继续”提示词。更换目标会重置原生用量计数；仅更新状态或
+预算会保留计数。状态变化独立发到聊天，仅 token 数字变化不刷消息。Goal 运行
+期间的普通聊天（含附件）会送入当前轮次。
+
+`/stop` 先暂停 Goal 再中断轮次；活跃 Goal 不会被空闲回收。cc-connect 重启后，
+在消息平台就绪时恢复各聊天当前选中的活跃 Goal，加载原生状态以核对是否已完成、
+暂停或受限；暂停/停止的目标需要 `/goal resume`。自动恢复要求平台支持重建
+回复上下文。恢复失败会保留原线程并报错，不会偷偷新建线程。
+
+`exec` 后端明确不支持这些命令。此功能启动自己的 app-server，完全独立于官方
+App；若同时使用其他客户端，请用独立 `codex_home` 避免对方加载相同线程。
+缺少相应 RPC 的 CLI 会直接报错，不把 `/goal` 当普通提示词。CLI 自身必须开启
+Goals（必要时执行 `codex features enable goals`）；此路径不需要
+`goal_auto_continue` 或 rollout 解析配置。
+
+预算耗尽后，暂停的目标仍可能显示原生 `budgetLimited` 状态；提高或取消预算后
+再执行 `/goal resume`。
+
 ### Codex home 目录（`codex_home`）
 
 默认情况下，Codex 适配器与终端和 Codex 桌面应用使用同一个 Codex home。解析顺序是：项目的 `codex_home` 选项，启动 cc-connect 的进程环境中的 `CODEX_HOME`，最后是 `~/.codex`。配置 `codex_home` 后，适配器会把它导出为子进程的 `CODEX_HOME`，`exec` 和 `app_server` 两种后端都如此；`/list` 也从同一个解析出的 home 读取会话。
@@ -187,7 +228,10 @@ cp ~/.codex/auth.json ~/.codex/config.toml ~/.codex-cc-connect/
 
 Cursor 项目可在 `[projects.agent.options]` 中设置可选的 `instructions_file`，
 将 UTF-8 文件附到每轮请求之前，包括续接会话。每轮都会重新读取，修改后无需重启 Agent；
-文件不可读时该轮明确失败。未设置时保持原有请求行为。
+文件不可读时该轮明确失败。非空文件会标为托管项目指令，并与用户消息分段；
+这只是提示词格式，不是安全边界。未设置时保持原有请求行为；空文件保留原有的两个换行前缀。
+建议使用绝对路径：相对路径基于 cc-connect 进程的当前工作目录解析，
+不是 `work_dir`，也不是配置文件所在目录。请使用简短的 UTF-8 文件；不限制大小或校验编码。
 
 `/memory` 读写项目根目录的 `AGENTS.md`，Cursor CLI 每次会话都会加载这个文件。`/cron setup` 写入的也是它。如果设置了 `instructions_file`，应指向同一个 `AGENTS.md`；两者路径不同时，`/memory` 仍写入项目根目录的 `AGENTS.md`。Cursor 没有用户级记忆文件，因此不支持 `/memory global`。
 

@@ -63,28 +63,6 @@ func (r replyContext) hasChat() bool {
 	return r.chatID != "" && r.chatID != "0"
 }
 
-// Permission button payloads, and what each one has to become before the engine
-// can act on it: the engine matches plain words ("allow", "allow all", "deny"),
-// so forwarding the raw payload worked for perm:allow only by accident —
-// tokenisation happens to find the "allow" token — and silently did nothing for
-// perm:allow_all. label is what the card is edited to show after the press.
-const (
-	payloadAllow    = "perm:allow"
-	payloadAllowAll = "perm:allow_all"
-	payloadDeny     = "perm:deny"
-)
-
-type permDecision struct {
-	token string
-	label string
-}
-
-var permPayloads = map[string]permDecision{
-	payloadAllow:    {token: "allow", label: "✅ Allowed"},
-	payloadAllowAll: {token: "allow all", label: "✅ Allow All"},
-	payloadDeny:     {token: "deny", label: "❌ Denied"},
-}
-
 // Platform implements core.Platform for the MAX messenger bot API.
 type Platform struct {
 	token     string
@@ -112,18 +90,18 @@ type Platform struct {
 	dedup        core.MessageDedup
 	webServer    *http.Server
 
-	// chatOfUser remembers each user's private-dialog chat_id, learned from
-	// their incoming messages. MAX omits recipient.chat_id in callbacks, so
-	// without this a button press would open a parallel "max:0:<user>" session.
+	// chatOfUser remembers only confirmed private-dialog chat IDs learned from
+	// incoming dialog messages. A group/channel must never overwrite that route.
+	// A callback may use this fallback only when its original message explicitly
+	// identifies a dialog and omits chat_id; unknown origins are rejected.
 	//
 	// Process-local by design, like dedup: it assumes a single cc-connect
 	// instance per bot token, which is also what MAX long-polling requires (two
 	// pollers on one token split updates between them). Running several
 	// instances behind a load balancer would let one learn the chat_id while
-	// another handles the callback, reviving the bug this cache exists to fix;
-	// that deployment shape needs a shared cache and is not supported today.
-	// Replies still work in that case — postMessage falls back to user_id — but
-	// the press lands in a separate session.
+	// another handles the callback. That deployment shape needs a shared cache
+	// and is not supported today. A cold-cache callback without a concrete chat
+	// ID is rejected instead of guessing a session or dispatching to max:0.
 	chatOfUser sync.Map // userID(string) -> chatID(string)
 }
 
@@ -852,7 +830,8 @@ type maxUpdate struct {
 	UpdateType string `json:"update_type"`
 	Timestamp  int64  `json:"timestamp"`
 
-	// message_created
+	// message_created, or the original button message for message_callback.
+	// MAX may omit/null the latter after the original message is deleted.
 	Message *maxMessage `json:"message,omitempty"`
 
 	// message_callback
@@ -908,30 +887,15 @@ type maxUser struct {
 }
 
 type maxRecipient struct {
-	ChatID int64 `json:"chat_id"`
-	// ChatType is "dialog" for a private dialog and "chat"/"channel" for a
-	// group or channel. MAX sends callbacks from private dialogs without a
-	// usable chat_id, so only a dialog chat_id may be cached for them.
+	ChatID   int64  `json:"chat_id"`
 	ChatType string `json:"chat_type"`
-}
-
-// isGroupChatType reports whether a MAX recipient chat_type names a group or
-// channel rather than a private dialog. MAX uses "dialog" for DMs and
-// "chat"/"channel" for shared chats; an unknown or empty value is treated as a
-// dialog so payloads without the field keep the callback fallback working.
-func isGroupChatType(chatType string) bool {
-	switch strings.ToLower(strings.TrimSpace(chatType)) {
-	case "chat", "group", "channel":
-		return true
-	}
-	return false
+	UserID   int64  `json:"user_id"`
 }
 
 type maxCallback struct {
-	CallbackID string     `json:"callback_id"`
-	Payload    string     `json:"payload"`
-	User       maxUser    `json:"user"`
-	Message    maxMessage `json:"message"`
+	CallbackID string  `json:"callback_id"`
+	Payload    string  `json:"payload"`
+	User       maxUser `json:"user"`
 }
 
 type maxUpdatesResponse struct {
@@ -1030,7 +994,7 @@ func (p *Platform) handleUpdate(ctx context.Context, upd *maxUpdate) {
 		}
 	case "message_callback":
 		if upd.Callback != nil {
-			p.handleCallback(ctx, upd.Callback)
+			p.handleCallback(ctx, upd.Callback, upd.Message)
 		}
 	}
 }
@@ -1075,12 +1039,9 @@ func (p *Platform) handleMessage(ctx context.Context, msg *maxMessage) {
 	}
 
 	chatID := strconv.FormatInt(msg.Recipient.ChatID, 10)
-	// Remember the private dialog so callbacks (which arrive without
-	// recipient.chat_id) can be routed to the same session instead of spawning
-	// "max:0:<user>". Group and channel chats must not be cached: a group post
-	// would overwrite the dialog chat_id and a later button press in the DM
-	// would be answered in the group session instead.
-	if chatID != "0" && chatID != "" && !isGroupChatType(msg.Recipient.ChatType) {
+	if msg.Recipient.ChatType == "dialog" && msg.Sender.UserID > 0 && msg.Recipient.ChatID != 0 {
+		// Remember the dialog so callbacks that omit recipient.chat_id
+		// can be routed to the same session instead of spawning "max:0:<user>".
 		p.chatOfUser.Store(userID, chatID)
 	}
 	sessionKey := fmt.Sprintf("max:%s:%s", chatID, userID)
@@ -1364,9 +1325,8 @@ func sniffImageMime(data []byte) string {
 	return "application/octet-stream"
 }
 
-func (p *Platform) handleCallback(ctx context.Context, cb *maxCallback) {
-	if p.dedup.IsDuplicate(cb.CallbackID) {
-		slog.Debug("max: duplicate callback ignored", "callback_id", cb.CallbackID)
+func (p *Platform) handleCallback(ctx context.Context, cb *maxCallback, message *maxMessage) {
+	if cb == nil || strings.TrimSpace(cb.CallbackID) == "" || cb.User.UserID <= 0 {
 		return
 	}
 	userID := strconv.FormatInt(cb.User.UserID, 10)
@@ -1375,54 +1335,31 @@ func (p *Platform) handleCallback(ctx context.Context, cb *maxCallback) {
 		return
 	}
 
-	// MAX does not fill recipient.chat_id for callbacks from private dialogs,
-	// so fall back to the chat_id learned from this user's earlier messages.
-	// Without it the press lands in a separate "max:0:<user>" session and the
-	// reply is POSTed to chat_id=0, which MAX rejects with chat.denied.
-	chatID := strconv.FormatInt(cb.Message.Recipient.ChatID, 10)
-	if chatID == "0" || chatID == "" {
-		if known, ok := p.chatOfUser.Load(userID); ok {
-			chatID, _ = known.(string)
-		}
+	rctx, ok := p.callbackReplyContext(cb, message)
+	if !ok {
+		slog.Debug("max: callback has no verified origin", "callback_id", cb.CallbackID)
+		return
 	}
-	sessionKey := fmt.Sprintf("max:%s:%s", chatID, userID)
-	rctx := replyContext{chatID: chatID, userID: userID, messageID: cb.Message.Body.Mid}
+	if p.dedup.IsDuplicate(cb.CallbackID) {
+		slog.Debug("max: duplicate callback ignored", "callback_id", cb.CallbackID)
+		return
+	}
+	sessionKey := fmt.Sprintf("max:%s:%s", rctx.chatID, userID)
 
 	slog.Debug("max: callback received", "user", cb.User.Name, "payload", cb.Payload)
 
-	// Translate permission payloads like the Telegram platform does, and flag the
-	// message so a stale click is dropped instead of reaching the agent as user
-	// input. Any other payload (ordinary buttons) passes through untouched.
 	content := cb.Payload
-	isPerm := false
-	choice := ""
-	if d, ok := permPayloads[cb.Payload]; ok {
-		content, choice, isPerm = d.token, d.label, true
+	isPerm := strings.HasPrefix(content, "perm:")
+	if isPerm {
+		if _, _, ok := core.ParsePermissionCallback(content); !ok {
+			return
+		}
 	}
-
 	handler := p.getHandler()
 	if handler == nil {
 		return
 	}
-
-	// Best-effort: mark the original card so the user sees which button won and
-	// cannot press it twice. Failure here must not block the decision itself.
-	if choice != "" && rctx.messageID != "" {
-		origText := cb.Message.Body.Text
-		if origText == "" {
-			origText = "(permission request)"
-		}
-		if err := p.UpdateMessage(ctx, rctx, origText+"\n\n"+choice); err != nil {
-			// 403/404 means the chat is gone — the user left between the message
-			// and the press. That is worth noticing; a transient blip is not.
-			if e := err.Error(); strings.Contains(e, "403") || strings.Contains(e, "404") {
-				slog.Warn("max: permission callback edit failed (chat no longer accessible)",
-					"error", err, "user", cb.User.Name)
-			} else {
-				slog.Debug("max: permission callback edit failed", "error", err)
-			}
-		}
-	}
+	// Do not repaint approval before the engine accepts the bound decision.
 
 	handler(p, &core.Message{
 		SessionKey:           sessionKey,
@@ -1434,6 +1371,42 @@ func (p *Platform) handleCallback(ctx context.Context, cb *maxCallback) {
 		ReplyCtx:             rctx,
 		IsPermissionResponse: isPerm,
 	})
+}
+
+// callbackReplyContext uses MAX's top-level original message, never its sender
+// as the clicker. Only a confirmed dialog may consult the dialog-only cache.
+// A deleted/missing source or ambiguous destination must not answer a prompt in
+// another chat, even when the actor recently sent messages there.
+func (p *Platform) callbackReplyContext(cb *maxCallback, message *maxMessage) (replyContext, bool) {
+	if cb == nil || cb.User.UserID <= 0 || message == nil || strings.TrimSpace(message.Body.Mid) == "" {
+		return replyContext{}, false
+	}
+	userID := strconv.FormatInt(cb.User.UserID, 10)
+	chatID := strconv.FormatInt(message.Recipient.ChatID, 10)
+	switch message.Recipient.ChatType {
+	case "dialog":
+		// On a bot-sent dialog card the optional recipient is the clicker.
+		// It is not a substitute for callback.user authorization.
+		if message.Recipient.UserID != 0 && message.Recipient.UserID != cb.User.UserID {
+			return replyContext{}, false
+		}
+		if message.Recipient.ChatID == 0 {
+			known, ok := p.chatOfUser.Load(userID)
+			if !ok {
+				return replyContext{}, false
+			}
+			chatID, _ = known.(string)
+		}
+	case "chat", "channel":
+		// A group/channel callback must carry its own chat ID. Never fall
+		// back to the actor's private dialog for a shared-card interaction.
+	default:
+		return replyContext{}, false
+	}
+	if chatID == "" || chatID == "0" {
+		return replyContext{}, false
+	}
+	return replyContext{chatID: chatID, userID: userID, messageID: message.Body.Mid}, true
 }
 
 // --- HTTP helpers ---

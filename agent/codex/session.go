@@ -24,6 +24,8 @@ import (
 // codexSession manages a multi-turn Codex conversation.
 // First Send() uses `codex exec`, subsequent ones use `codex exec resume <threadID>`.
 type codexSession struct {
+	turnTokenStart *codexTokenUsage
+	sidechain      codexSidechainMeter
 	workDir        string
 	model          string
 	effort         string
@@ -31,7 +33,7 @@ type codexSession struct {
 	baseURL        string   // provider base URL; passed as -c openai_base_url=<url>
 	modelProvider  string   // Codex model_provider name; passed as -c model_provider=<name>
 	cmd            string   // CLI binary, default "codex"
-	cliExtraArgs   []string // extra args from cmd, prepended before exec args
+	cliExtraArgs   []string // extra args from cmd; config overrides share the exec scope
 	extraEnv       []string
 	promptPreamble string
 	events         chan core.Event
@@ -49,6 +51,7 @@ type codexSession struct {
 	cmds           map[*exec.Cmd]struct{}
 
 	pendingMsgs []string // buffered agent_message texts awaiting classification
+	subagents   codexSubagents
 
 	runtimeCfgMu       sync.Mutex
 	runtimeCfgModel    string
@@ -153,9 +156,9 @@ func (cs *codexSession) Send(prompt string, messageID string, images []core.Imag
 	if !isResume {
 		prompt = prependCodexPromptPreamble(prompt, cs.promptPreamble)
 	}
-	args := cs.buildExecArgs(prompt, imagePaths)
-	if len(cs.cliExtraArgs) > 0 {
-		args = append(append([]string{}, cs.cliExtraArgs...), args...)
+	args, err := codexSubcommandArgs(cs.cliExtraArgs, cs.buildExecArgs(prompt, imagePaths))
+	if err != nil {
+		return err
 	}
 
 	bin, err := resolveCodexExecutable(cs.cmd)
@@ -173,6 +176,7 @@ func (cs *codexSession) Send(prompt string, messageID string, images []core.Imag
 	}
 	cmd.Stdin = strings.NewReader(prompt)
 
+	cs.beginBillingUsage()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("codexSession: stdout pipe: %w", err)
@@ -449,7 +453,11 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 	switch eventType {
 	case "thread.started":
 		if tid, ok := raw["thread_id"].(string); ok {
+			prevTID := cs.CurrentSessionID()
 			cs.threadID.Store(tid)
+			if root, err := resolveCodexHome(cs.extraEnv); err == nil {
+				cs.sidechain.begin(root, tid, prevTID == tid)
+			}
 			cs.contextMu.Lock()
 			cs.sessionFile = ""
 			cs.contextUsage = nil
@@ -473,6 +481,12 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 	case "item.started":
 		cs.handleItemStarted(raw)
 
+	case "item.updated":
+		if item, ok := raw["item"].(map[string]any); ok && stringField(item, "type") == "collab_tool_call" {
+			cs.flushPendingAsCommentary()
+			cs.handleCollabItem(item)
+		}
+
 	case "item.completed":
 		cs.handleItemCompleted(raw)
 
@@ -481,6 +495,7 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 		cs.refreshContextUsageFromRollout()
 		cs.flushPendingAsText()
 		evt := core.Event{Type: core.EventResult, SessionID: cs.CurrentSessionID(), Done: true}
+		cs.finishBillingUsage(&evt, raw)
 		select {
 		case cs.events <- evt:
 		case <-cs.ctx.Done():
@@ -498,6 +513,7 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 		}
 		slog.Warn("codexSession: turn failed", "error", errMsg)
 		evt := core.Event{Type: core.EventError, Error: fmt.Errorf("%s", errMsg)}
+		cs.finishBillingUsage(&evt, raw)
 		select {
 		case cs.events <- evt:
 		case <-cs.ctx.Done():
@@ -517,8 +533,8 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 	}
 }
 
-// flushPendingAsThinking emits all buffered agent_messages as EventThinking.
-func (cs *codexSession) flushPendingAsThinking() {
+// flushPendingAsCommentary classifies legacy messages preceding a tool as user-facing updates.
+func (cs *codexSession) flushPendingAsCommentary() {
 	if cs.ctx.Err() != nil {
 		return
 	}
@@ -526,7 +542,7 @@ func (cs *codexSession) flushPendingAsThinking() {
 		if cs.ctx.Err() != nil {
 			return
 		}
-		evt := core.Event{Type: core.EventThinking, Content: text}
+		evt := core.Event{Type: core.EventCommentary, Content: text}
 		select {
 		case cs.events <- evt:
 		case <-cs.ctx.Done():
@@ -570,19 +586,25 @@ func (cs *codexSession) handleItemStarted(raw map[string]any) {
 		return
 	}
 	itemType, _ := item["type"].(string)
+	callID, _ := item["id"].(string)
 	slog.Debug("codexSession: item.started", "item_type", itemType)
+	if itemType == "collab_tool_call" {
+		cs.flushPendingAsCommentary()
+		cs.handleCollabItem(item)
+		return
+	}
 
 	if itemType == "agent_message" || itemType == "message" || itemType == "reasoning" {
 		return
 	}
 
-	// Any non-message item is a tool use; flush pending messages as thinking first.
-	cs.flushPendingAsThinking()
+	// Messages before a tool are commentary, not reasoning or the final answer.
+	cs.flushPendingAsCommentary()
 
 	switch itemType {
 	case "command_execution":
 		command, _ := item["command"].(string)
-		evt := core.Event{Type: core.EventToolUse, ToolName: "Bash", ToolInput: command}
+		evt := core.Event{Type: core.EventToolUse, ToolCallID: callID, ToolName: "Bash", ToolInput: command}
 		select {
 		case cs.events <- evt:
 		case <-cs.ctx.Done():
@@ -591,7 +613,7 @@ func (cs *codexSession) handleItemStarted(raw map[string]any) {
 	case "function_call":
 		name, _ := item["name"].(string)
 		args, _ := item["arguments"].(string)
-		evt := core.Event{Type: core.EventToolUse, ToolName: name, ToolInput: args}
+		evt := core.Event{Type: core.EventToolUse, ToolCallID: callID, ToolName: name, ToolInput: args}
 		select {
 		case cs.events <- evt:
 		case <-cs.ctx.Done():
@@ -609,9 +631,13 @@ func (cs *codexSession) handleItemCompleted(raw map[string]any) {
 		return
 	}
 	itemType, _ := item["type"].(string)
+	callID, _ := item["id"].(string)
 	slog.Debug("codexSession: item.completed", "item_type", itemType)
 
 	switch itemType {
+	case "collab_tool_call":
+		cs.flushPendingAsCommentary()
+		cs.handleCollabItem(item)
 	case "reasoning":
 		text := extractItemText(item, "summary", "summary_text")
 		if text != "" {
@@ -626,6 +652,22 @@ func (cs *codexSession) handleItemCompleted(raw map[string]any) {
 	case "agent_message", "message":
 		text := extractItemText(item, "content", "output_text")
 		if text != "" {
+			if phase, _ := item["phase"].(string); phase == "commentary" {
+				cs.flushPendingAsCommentary()
+				select {
+				case cs.events <- core.Event{Type: core.EventCommentary, Content: text}:
+				case <-cs.ctx.Done():
+				}
+				return
+			}
+			if phase, _ := item["phase"].(string); phase == "partial_answer" || phase == "final_answer" {
+				cs.flushPendingAsCommentary()
+				select {
+				case cs.events <- core.Event{Type: core.EventText, Content: text}:
+				case <-cs.ctx.Done():
+				}
+				return
+			}
 			cs.pendingMsgs = append(cs.pendingMsgs, text)
 		}
 
@@ -633,9 +675,12 @@ func (cs *codexSession) handleItemCompleted(raw map[string]any) {
 		command, _ := item["command"].(string)
 		status, _ := item["status"].(string)
 		output, _ := item["aggregated_output"].(string)
-		exitCode, _ := item["exit_code"].(float64)
-		code := int(exitCode)
-		success := codexToolSuccess(status, &code)
+		code, hasExitCode := toInt(item["exit_code"])
+		var exitCode *int
+		if hasExitCode {
+			exitCode = &code
+		}
+		success := codexToolSuccess(status, exitCode)
 
 		slog.Debug("codexSession: command completed",
 			"command", truncate(command, 100),
@@ -645,10 +690,12 @@ func (cs *codexSession) handleItemCompleted(raw map[string]any) {
 		)
 		evt := core.Event{
 			Type:         core.EventToolResult,
+			ToolCallID:   callID,
+			ToolInput:    command,
 			ToolName:     "Bash",
-			ToolResult:   truncate(strings.TrimSpace(output), 500),
+			ToolResult:   core.BoundedToolOutput(output),
 			ToolStatus:   strings.TrimSpace(status),
-			ToolExitCode: &code,
+			ToolExitCode: exitCode,
 			ToolSuccess:  &success,
 		}
 		select {
@@ -667,8 +714,9 @@ func (cs *codexSession) handleItemCompleted(raw map[string]any) {
 		)
 		evt := core.Event{
 			Type:        core.EventToolResult,
+			ToolCallID:  callID,
 			ToolName:    name,
-			ToolResult:  truncate(strings.TrimSpace(output), 500),
+			ToolResult:  core.BoundedToolOutput(output),
 			ToolStatus:  strings.TrimSpace(status),
 			ToolSuccess: &success,
 		}
@@ -690,7 +738,7 @@ func (cs *codexSession) handleItemCompleted(raw map[string]any) {
 	default:
 		if toolName, known := codexToolNames[itemType]; known {
 			input := codexExtractToolInput(item)
-			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: input}
+			evt := core.Event{Type: core.EventToolUse, ToolCallID: callID, ToolName: toolName, ToolInput: input}
 			select {
 			case cs.events <- evt:
 			case <-cs.ctx.Done():

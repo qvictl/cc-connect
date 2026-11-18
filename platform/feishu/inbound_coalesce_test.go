@@ -10,7 +10,7 @@ import (
 func newInboundTestPlatform(t *testing.T, window int) (*Platform, chan *core.Message) {
 	t.Helper()
 	created, err := New(map[string]any{
-		"app_id": "unit-test-app", "app_secret": "unit-test-secret",
+		"app_id": "unit-test-app", "app_secret": fixedTestAppSecret,
 		"enable_feishu_card": false, "inbound_coalesce_window_ms": window,
 	})
 	if err != nil {
@@ -37,7 +37,7 @@ func TestInboundCoalesce_DefaultDispatchesImmediately(t *testing.T) {
 func TestInboundCoalesce_WindowValidation(t *testing.T) {
 	for _, window := range []int{-1, 60001} {
 		_, err := New(map[string]any{
-			"app_id": "unit-test-app", "app_secret": "unit-test-secret",
+			"app_id": "unit-test-app", "app_secret": fixedTestAppSecret,
 			"inbound_coalesce_window_ms": window,
 		})
 		if err == nil {
@@ -217,7 +217,7 @@ func TestInboundCoalesce_CommandCannotOvertakeTimerDelivery(t *testing.T) {
 func newCardCoalesceTestPlatform(t *testing.T) (*interactivePlatform, chan *core.Message) {
 	t.Helper()
 	created, err := New(map[string]any{
-		"app_id": "unit-test-app", "app_secret": "unit-test-secret",
+		"app_id": "unit-test-app", "app_secret": fixedTestAppSecret,
 		"enable_feishu_card": true, "inbound_coalesce_window_ms": 60000,
 		"domain": stubOpenAPIDomain(t),
 	})
@@ -225,6 +225,7 @@ func newCardCoalesceTestPlatform(t *testing.T) (*interactivePlatform, chan *core
 		t.Fatal(err)
 	}
 	ip := created.(*interactivePlatform)
+	bindFixturePlatform(t, ip.Platform, ip.domain)
 	got := make(chan *core.Message, 10)
 	ip.handler = func(_ core.Platform, msg *core.Message) { got <- msg }
 	return ip, got

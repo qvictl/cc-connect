@@ -96,6 +96,10 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
 
+      - name: Run web tests
+        working-directory: web
+        run: pnpm test
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -118,6 +122,9 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+      - name: Cross-compile for Windows
+        run: GOOS=windows GOARCH=amd64 go build ./...
 
       - name: Run tests
         run: go test ./... -v -race

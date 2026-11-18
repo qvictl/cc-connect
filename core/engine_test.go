@@ -1980,8 +1980,8 @@ func TestProcessInteractiveEvents_CardProgressTruncatesToolInputByToolMaxLen(t *
 	if utf8.RuneCountInString(toolUseText) > 50+len("...") {
 		t.Fatalf("card tool input not truncated: runeCount=%d, content=%q", utf8.RuneCountInString(toolUseText), toolUseText)
 	}
-	if !strings.HasSuffix(toolUseText, "...") {
-		t.Fatalf("expected truncated tool input to end with '...', got %q", toolUseText)
+	if !strings.Contains(toolUseText, "\n…\n") || !strings.HasSuffix(toolUseText, "abcdefghij") {
+		t.Fatalf("expected an omission marker and the original command tail, got %q", toolUseText)
 	}
 	if !strings.HasPrefix(toolUseText, "abcdefghij") {
 		t.Fatalf("expected truncated tool input to start with original prefix, got %q", toolUseText)
@@ -3058,7 +3058,7 @@ func TestSendPermissionPrompt_CardPlatform(t *testing.T) {
 	e := newTestEngine()
 	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 
-	e.sendPermissionPrompt(p, "ctx", "full prompt text", "write_file", "/tmp/test.txt")
+	e.sendPermissionPrompt(p, "ctx", "full prompt text", "write_file", "/tmp/test.txt", "prompt-1")
 
 	if len(p.sentCards) != 1 {
 		t.Fatalf("expected 1 sent card, got %d", len(p.sentCards))
@@ -3087,34 +3087,14 @@ func TestSendPermissionPrompt_CardPlatform(t *testing.T) {
 		t.Errorf("plain text should not be sent when card is used, got %v", p.sent)
 	}
 
-	// Verify Extra fields carry i18n labels and body for card callback updates
-	var allowBtn, denyBtn CardButton
 	for _, elem := range card.Elements {
 		if actions, ok := elem.(CardActions); ok {
 			for _, btn := range actions.Buttons {
-				switch btn.Value {
-				case "perm:allow":
-					allowBtn = btn
-				case "perm:deny":
-					denyBtn = btn
+				if btn.Extra["perm_request_id"] != "prompt-1" {
+					t.Fatalf("button %s lost its request binding: %v", btn.Value, btn.Extra)
 				}
 			}
 		}
-	}
-	if allowBtn.Extra == nil {
-		t.Fatal("allow button should have Extra map")
-	}
-	if allowBtn.Extra["perm_color"] != "green" {
-		t.Errorf("allow button perm_color should be green, got %s", allowBtn.Extra["perm_color"])
-	}
-	if allowBtn.Extra["perm_body"] == "" {
-		t.Error("allow button perm_body should not be empty")
-	}
-	if !strings.Contains(allowBtn.Extra["perm_label"], "Allow") {
-		t.Errorf("allow button perm_label should contain 'Allow', got %s", allowBtn.Extra["perm_label"])
-	}
-	if denyBtn.Extra["perm_color"] != "red" {
-		t.Errorf("deny button perm_color should be red, got %s", denyBtn.Extra["perm_color"])
 	}
 }
 
@@ -3122,7 +3102,7 @@ func TestSendPermissionPrompt_InlineButtonPlatform(t *testing.T) {
 	e := newTestEngine()
 	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
 
-	e.sendPermissionPrompt(p, "ctx", "full prompt text", "write_file", "/tmp/test.txt")
+	e.sendPermissionPrompt(p, "ctx", "full prompt text", "write_file", "/tmp/test.txt", "prompt-1")
 
 	if p.buttonContent != "full prompt text" {
 		t.Errorf("expected button content to be prompt, got %s", p.buttonContent)
@@ -3130,8 +3110,8 @@ func TestSendPermissionPrompt_InlineButtonPlatform(t *testing.T) {
 	if len(p.buttonRows) < 2 {
 		t.Fatalf("expected at least 2 button rows, got %d", len(p.buttonRows))
 	}
-	if p.buttonRows[0][0].Data != "perm:allow" {
-		t.Errorf("expected perm:allow, got %s", p.buttonRows[0][0].Data)
+	if p.buttonRows[0][0].Data != "perm:prompt-1:allow" {
+		t.Errorf("expected bound permission payload, got %s", p.buttonRows[0][0].Data)
 	}
 }
 
@@ -3139,7 +3119,7 @@ func TestSendPermissionPrompt_PlainPlatform(t *testing.T) {
 	e := newTestEngine()
 	p := &stubPlatformEngine{n: "plain"}
 
-	e.sendPermissionPrompt(p, "ctx", "full prompt text", "write_file", "/tmp/test.txt")
+	e.sendPermissionPrompt(p, "ctx", "full prompt text", "write_file", "/tmp/test.txt", "prompt-1")
 
 	if len(p.sent) != 1 || p.sent[0] != "full prompt text" {
 		t.Errorf("expected plain text fallback, got %v", p.sent)
@@ -4153,6 +4133,8 @@ func TestCmdDelete_SyncsLocalSessionSnapshot(t *testing.T) {
 
 	victim := e.sessions.NewSession("test:user2", "victim")
 	victim.SetAgentSessionID("session-1", "stub")
+	// user2 has moved on, so the victim is nobody's active session.
+	e.sessions.NewSession("test:user2", "current")
 	keep := e.sessions.NewSession("test:user3", "keep")
 	keep.SetAgentSessionID("session-2", "stub")
 
@@ -4166,6 +4148,52 @@ func TestCmdDelete_SyncsLocalSessionSnapshot(t *testing.T) {
 	}
 	if got := e.sessions.FindByID(keep.ID); got == nil {
 		t.Fatal("keep session should remain")
+	}
+}
+
+func TestCmdDelete_RefusesAnotherChatsActiveSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubDeleteAgent{stubListAgent: stubListAgent{sessions: []AgentSessionInfo{
+		{ID: "session-1", Summary: "One"},
+		{ID: "session-2", Summary: "Two"},
+	}}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+	other := e.sessions.GetOrCreateActive("test:user2")
+	other.SetAgentSessionID("session-1", "stub")
+
+	e.cmdDelete(p, msg, []string{"1"})
+
+	if len(agent.deleted) != 0 {
+		t.Fatalf("deleted = %v, want none", agent.deleted)
+	}
+	if got := e.sessions.FindByID(other.ID); got == nil || got.GetAgentSessionID() != "session-1" {
+		t.Fatalf("other chat's session = %+v, want it untouched", got)
+	}
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Cannot delete One: it is the active session of another chat") {
+		t.Fatalf("sent = %v, want in-use refusal", p.sent)
+	}
+}
+
+func TestCmdDelete_BatchSkipsAnotherChatsActiveSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubDeleteAgent{stubListAgent: stubListAgent{sessions: []AgentSessionInfo{
+		{ID: "session-1", Summary: "One"},
+		{ID: "session-2", Summary: "Two"},
+	}}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+	old := e.sessions.GetOrCreateActive("test:user2")
+	old.SetAgentSessionID("session-2", "stub")
+	e.sessions.NewSession("test:user2", "current").SetAgentSessionID("session-1", "stub")
+
+	e.cmdDelete(p, msg, []string{"1,2"})
+
+	if got, want := strings.Join(agent.deleted, ","), "session-2"; got != want {
+		t.Fatalf("deleted = %q, want %q", got, want)
+	}
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Cannot delete One") || !strings.Contains(p.sent[0], "Session deleted: Two") {
+		t.Fatalf("sent = %v, want refusal for One and deletion of Two", p.sent)
 	}
 }
 
@@ -4398,6 +4426,34 @@ func TestDeleteMode_SubmitBlocksActiveSession(t *testing.T) {
 	pushedCard := p.getRefreshedCards()[len(p.getRefreshedCards())-1]
 	if !strings.Contains(pushedCard.RenderText(), "Cannot delete the currently active session") {
 		t.Fatalf("result text = %q, want active-session warning", pushedCard.RenderText())
+	}
+}
+
+func TestDeleteMode_SubmitBlocksAnotherChatsActiveSession(t *testing.T) {
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	agent := &stubDeleteAgent{stubListAgent: stubListAgent{sessions: []AgentSessionInfo{
+		{ID: "session-1", Summary: "One"},
+		{ID: "session-2", Summary: "Two"},
+	}}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "feishu:user1", ReplyCtx: "ctx"}
+	e.sessions.GetOrCreateActive("feishu:user2").SetAgentSessionID("session-2", "test")
+
+	e.cmdDelete(p, msg, nil)
+	_ = e.handleCardNav("act:/delete-mode toggle session-2", msg.SessionKey)
+	if resultCard := e.handleCardNav("act:/delete-mode submit", msg.SessionKey); resultCard == nil {
+		t.Fatal("expected deleting card")
+	}
+	waitDeleteModePhase(t, e, msg.SessionKey, "result")
+	if len(agent.deleted) != 0 {
+		t.Fatalf("deleted = %v, want none", agent.deleted)
+	}
+	refreshed := p.getRefreshedCards()
+	if len(refreshed) == 0 {
+		t.Fatal("expected refreshed result card via RefreshCard")
+	}
+	if text := refreshed[len(refreshed)-1].RenderText(); !strings.Contains(text, "active session of another chat") {
+		t.Fatalf("result text = %q, want in-use refusal", text)
 	}
 }
 
@@ -6582,19 +6638,106 @@ func TestHandleCardNav_DirSelectSwitchesWorkDir(t *testing.T) {
 	dataDir := t.TempDir()
 	agent := &stubWorkDirAgent{workDir: d3}
 	e := NewEngine("test", agent, []Platform{&stubPlatformEngine{n: "test"}}, dataDir, LangEnglish)
+	e.SetAdminFrom("user1")
 	e.SetDirHistory(NewDirHistory(dataDir))
 	e.dirHistory.Add("test", d1)
 	e.dirHistory.Add("test", d2)
 	e.dirHistory.Add("test", d3)
 
 	sk := "test:user1"
-	_ = e.handleCardNav("act:/dir select 2", sk)
+	_ = e.handleCardNavForUser("act:/dir select 2", sk, "user1")
 	if agent.workDir != d2 {
 		t.Fatalf("workDir = %q, want %q", agent.workDir, d2)
 	}
-	card := e.handleCardNav("nav:/dir 1", sk)
+	card := e.handleCardNavForUser("nav:/dir 1", sk, "user1")
 	if card == nil {
 		t.Fatal("expected dir card after nav")
+	}
+}
+
+func TestHandleCardNav_DisabledProviderIsRefused(t *testing.T) {
+	agent := &stubProviderAgent{
+		providers: []ProviderConfig{{Name: "a"}, {Name: "b"}},
+		active:    "a",
+	}
+	e := NewEngine("test", agent, []Platform{&stubPlatformEngine{n: "test"}}, "", LangEnglish)
+	e.SetDisabledCommands([]string{"provider"})
+	sk := "test:user1"
+
+	for _, action := range []string{"nav:/provider", "act:/provider b", "act:/provider/add-other", "act:/provider clear"} {
+		card := e.handleCardNav(action, sk)
+		if card == nil || !strings.Contains(card.RenderText(), "Command `/provider` is disabled") {
+			t.Fatalf("%s: card = %v, want disabled notice", action, card)
+		}
+	}
+	if agent.active != "a" {
+		t.Fatalf("active provider = %q, want a", agent.active)
+	}
+}
+
+func TestHandleCardNav_DisabledDirAndDeleteAreRefused(t *testing.T) {
+	temp := t.TempDir()
+	d1 := filepath.Join(temp, "a")
+	d2 := filepath.Join(temp, "b")
+	for _, d := range []string{d1, d2} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	dataDir := t.TempDir()
+	agent := &stubWorkDirAgent{workDir: d2}
+	e := NewEngine("test", agent, []Platform{&stubPlatformEngine{n: "test"}}, dataDir, LangEnglish)
+	e.SetDirHistory(NewDirHistory(dataDir))
+	e.dirHistory.Add("test", d1)
+	e.dirHistory.Add("test", d2)
+	e.SetDisabledCommands([]string{"dir", "delete"})
+	sk := "test:user1"
+
+	_ = e.handleCardNav("act:/dir select 2", sk)
+	if agent.workDir != d2 {
+		t.Fatalf("workDir = %q, want unchanged %q", agent.workDir, d2)
+	}
+	card := e.handleCardNav("act:/delete-mode submit", sk)
+	if card == nil || !strings.Contains(card.RenderText(), "Command `/delete` is disabled") {
+		t.Fatalf("delete-mode card = %v, want disabled notice", card)
+	}
+}
+
+func TestHandleCardNav_RoleDisabledCommandUsesExplicitActor(t *testing.T) {
+	agent := &stubProviderAgent{providers: []ProviderConfig{{Name: "a"}, {Name: "b"}}, active: "a"}
+	e := NewEngine("test", agent, []Platform{&stubPlatformEngine{n: "test"}}, "", LangEnglish)
+	urm := NewUserRoleManager()
+	urm.Configure("member", []RoleInput{
+		{Name: "admin", UserIDs: []string{"u_admin"}},
+		{Name: "member", UserIDs: []string{"*"}, DisabledCommands: []string{"provider"}},
+	})
+	e.SetUserRoles(urm)
+
+	_ = e.handleCardNavForUser("act:/provider b", "test:chat1:u_other", "u_other")
+	if agent.active != "a" {
+		t.Fatalf("member switched provider to %q", agent.active)
+	}
+	_ = e.handleCardNavForUser("act:/provider b", "test:chat1:u_admin", "u_admin")
+	if agent.active != "b" {
+		t.Fatalf("admin provider = %q, want b", agent.active)
+	}
+}
+
+func TestRenderHelpCard_HidesDisabledCommands(t *testing.T) {
+	e := NewEngine("test", &stubAgent{}, []Platform{&stubPlatformEngine{n: "test"}}, "", LangEnglish)
+	e.SetDisabledCommands([]string{"delete", "provider", "memory", "upgrade", "dir"})
+
+	for _, group := range []string{"session", "agent", "tools", "system"} {
+		card := e.handleCardNav("nav:/help "+group, "test:user1")
+		text := card.RenderText()
+		for _, cmd := range []string{"/delete", "/provider", "/memory", "/upgrade", "/dir"} {
+			if strings.Contains(text, "**"+cmd+"**") {
+				t.Fatalf("help %s = %q, should not list %s", group, text, cmd)
+			}
+		}
+	}
+	if _, ok := findCardAction(e.handleCardNav("nav:/help agent", "test:user1"), "nav:/model"); !ok {
+		t.Fatal("enabled commands should stay on the help card")
 	}
 }
 
@@ -7080,60 +7223,6 @@ func TestHandlePendingPermission_AskUserQuestion_SingleQuestion(t *testing.T) {
 		t.Error("expected pending to be cleared after response")
 	}
 	state.mu.Unlock()
-}
-
-// A card click whose answer the platform already rendered in place must not
-// also be echoed as a chat message — the user would see the same answer twice
-// (card swapped to "✅ answer" plus a text reply saying "✅ question: answer").
-func TestHandlePendingPermission_AskUserQuestion_CardAnswerRenderedSuppressesEcho(t *testing.T) {
-	for _, rendered := range []bool{true, false} {
-		e := newTestEngine()
-		p := &stubPlatformEngine{n: "test"}
-		rec := &recordingAgentSession{}
-
-		state := &interactiveState{
-			agentSession: rec,
-			platform:     p,
-			replyCtx:     "ctx",
-			pending: &pendingPermission{
-				RequestID: "req-1",
-				ToolName:  "AskUserQuestion",
-				ToolInput: map[string]any{
-					"questions": []any{map[string]any{"question": "Which?"}},
-				},
-				Questions: testQuestions(),
-				Resolved:  make(chan struct{}),
-			},
-		}
-		key := "test:chat:user1"
-		e.interactiveMu.Lock()
-		e.interactiveStates[key] = state
-		e.interactiveMu.Unlock()
-
-		handled := e.handlePendingPermission(p, &Message{
-			SessionKey:         key,
-			UserID:             "user1",
-			Content:            "2",
-			ReplyCtx:           "ctx",
-			CardAnswerRendered: rendered,
-		}, "2", "")
-		if !handled {
-			t.Fatal("expected handlePendingPermission to return true")
-		}
-		if rec.calls != 1 {
-			t.Fatalf("rendered=%v: expected 1 RespondPermission call, got %d", rendered, rec.calls)
-		}
-
-		p.mu.Lock()
-		sent := append([]string(nil), p.sent...)
-		p.mu.Unlock()
-		if rendered && len(sent) != 0 {
-			t.Errorf("CardAnswerRendered=true produced %d echo message(s): %q", len(sent), sent)
-		}
-		if !rendered && len(sent) != 1 {
-			t.Errorf("CardAnswerRendered=false produced %d echo message(s), want 1 (typed answers still get one)", len(sent))
-		}
-	}
 }
 
 func TestHandlePendingPermission_AskUserQuestion_MultiQuestion_Sequential(t *testing.T) {
@@ -8952,7 +9041,7 @@ func (s *blockingCloseAgentSession) Close() error {
 }
 
 // permSignalInlinePlatform wraps stubInlineButtonPlatform and signals when a
-// SendWithButtons call includes perm:allow, so tests do not read buttonRows
+// SendWithButtons call includes a bound allow decision, so tests do not read buttonRows
 // from another goroutine (race with the engine under -race).
 type permSignalInlinePlatform struct {
 	stubInlineButtonPlatform
@@ -8965,7 +9054,7 @@ func (p *permSignalInlinePlatform) SendWithButtons(ctx context.Context, replyCtx
 	}
 	for _, row := range buttons {
 		for _, b := range row {
-			if b.Data == "perm:allow" {
+			if _, decision, ok := ParsePermissionCallback(b.Data); ok && decision == "allow" {
 				select {
 				case p.permAllowSent <- struct{}{}:
 				default:

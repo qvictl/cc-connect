@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -273,6 +274,69 @@ type StatusFooterUpdater interface {
 	UpdateMessageWithStatusFooter(ctx context.Context, replyCtx any, content, footer string) error
 }
 
+// TurnFeedbackPlatform is an optional Platform extension for platforms that
+// end a turn's final reply with feedback controls (e.g. 👍 / 👎 and a comment
+// box). The controls are rendered where the status footer is, so while it
+// reports true the final reply takes the status-footer path even when there
+// is no footer text.
+type TurnFeedbackPlatform interface {
+	TurnFeedbackEnabled() bool
+}
+
+// TurnFeedbackTurnStarter clears transient attachment targets at a turn boundary.
+// It must not remove previously submitted feedback or persisted reply cards.
+type TurnFeedbackTurnStarter interface {
+	BeginTurnFeedback(replyCtx any)
+}
+
+func beginTurnFeedback(p any, replyCtx any) {
+	if starter, ok := p.(TurnFeedbackTurnStarter); ok {
+		starter.BeginTurnFeedback(replyCtx)
+	}
+}
+
+// TurnFeedbackAnswerRecorder snapshots a verified delivered answer before
+// later progress or notice messages replace the platform's latest reply.
+type TurnFeedbackAnswerRecorder interface {
+	CaptureTurnFeedbackAnswer(replyCtx any)
+}
+
+func captureTurnFeedbackAnswer(p any, replyCtx any) {
+	if recorder, ok := p.(TurnFeedbackAnswerRecorder); ok && wantsFinalReplyFooter(p, "") {
+		recorder.CaptureTurnFeedbackAnswer(replyCtx)
+	}
+}
+
+// TurnFeedbackAttacher is the counterpart of TurnFeedbackPlatform for a
+// turn whose answer already went out before its last tool call, so no final
+// reply is left to carry the controls: the platform attaches them to what
+// was sent last, or right under it.
+type TurnFeedbackAttacher interface {
+	AttachTurnFeedback(ctx context.Context, replyCtx any) error
+}
+
+// attachTurnFeedback gives such a turn its controls, when the platform has
+// them on.
+func attachTurnFeedback(ctx context.Context, p any, replyCtx any) {
+	a, ok := p.(TurnFeedbackAttacher)
+	if !ok || !wantsFinalReplyFooter(p, "") {
+		return
+	}
+	if err := a.AttachTurnFeedback(ctx, replyCtx); err != nil {
+		slog.Warn("turn feedback controls not attached", "error", err)
+	}
+}
+
+// wantsFinalReplyFooter reports whether a final reply must go through the
+// status-footer path: there is a footer to render, or feedback controls.
+func wantsFinalReplyFooter(p any, statusFooter string) bool {
+	if statusFooter != "" {
+		return true
+	}
+	tf, ok := p.(TurnFeedbackPlatform)
+	return ok && tf.TurnFeedbackEnabled()
+}
+
 // ProgressStyleProvider is an optional interface for platforms that expose
 // a preferred style for intermediate progress rendering.
 // Typical values: "legacy", "compact", "card".
@@ -315,8 +379,21 @@ type CardSender interface {
 
 // CardNavigationHandler is called by platforms to render a card for in-place
 // card updates (e.g. Feishu card.action.trigger callback). The action string
-// uses prefixes like "nav:/model" or "act:/model 3".
+// uses prefixes like "nav:/model" or "act:/model 3". This legacy API does not
+// carry authenticated identity; role-based and privileged commands require
+// UserAwareCardNavigable and are refused when the clicker is unavailable.
 type CardNavigationHandler func(action string, sessionKey string) *Card
+
+// UserAwareCardNavigationHandler receives the authenticated clicker separately
+// from the session key, which may be shared by several users.
+type UserAwareCardNavigationHandler func(action, sessionKey, userID string) *Card
+
+// UserAwareCardNavigable is preferred over CardNavigable when available, so
+// role policies follow the clicker rather than a user inferred from the session.
+// CardNavigable remains supported for adapters using the original callback API.
+type UserAwareCardNavigable interface {
+	SetUserAwareCardNavigationHandler(h UserAwareCardNavigationHandler)
+}
 
 // CardNavigable is an optional interface for platforms that support in-place
 // card navigation (updating the existing card instead of sending a new message).
@@ -401,6 +478,17 @@ type PermissionResult struct {
 // continues working. False means there is no active turn; use normal Send instead.
 type UserInputSteerer interface {
 	SteerUserInput(prompt string) (bool, error)
+}
+
+// MidTurnInputSender is an optional interface for agent sessions that can take
+// a user message while a turn is still running. SendMidTurn writes it to the
+// same live process, which folds it into the active turn instead of starting a
+// second process, blocking, or rejecting it. If the agent instead runs the
+// message as a follow-up turn right after the current one, the session must
+// report both as one turn (a single EventResult), so the engine's reply for
+// the running turn stays aligned. The engine uses it for busy_action = "inject".
+type MidTurnInputSender interface {
+	SendMidTurn(prompt string, messageID string, images []ImageAttachment, files []FileAttachment) error
 }
 
 // ToolAuthorizer is an optional interface for agents that support dynamic tool authorization.
@@ -587,6 +675,9 @@ type SkillCatalogProvider interface {
 }
 
 // SessionDeleter is an optional interface for agents that support deleting sessions.
+// For a nonempty ID, a nil error confirms deletion. Unsupported operations and
+// failures must return an error so callers do not discard state for a session
+// that still exists.
 type SessionDeleter interface {
 	DeleteSession(ctx context.Context, sessionID string) error
 }
@@ -634,6 +725,13 @@ type WorkspaceAgentOptionSnapshotter interface {
 // apply a mode change immediately without restarting the process.
 type LiveModeSwitcher interface {
 	SetLiveMode(mode string) bool
+}
+
+// StartupEventPreserver opts out of draining a newly started session's events.
+// These sessions replay only live activity (including unanswered interactions),
+// never completed history. Abnormal turn exits still use the normal resync path.
+type StartupEventPreserver interface {
+	PreserveStartupEvents() bool
 }
 
 // StartupWarner is an optional interface for agent sessions that need to surface

@@ -33,10 +33,8 @@ PLATFORMS := \
 #   make build EXCLUDE=discord,dingtalk,qq,qqbot,line
 # ---------------------------------------------------------------------------
 
-ALL_AGENTS    := acp antigravity claudecode codex copilot cursor devin gemini iflow kimi opencode pi qoder tmux
-ALL_PLATFORMS := feishu telegram discord slack dingtalk wecom weixin qq qqbot line weibo max matrix webex wps-agentspace tuitui
-ALL_AGENTS    := acp antigravity claudecode codex copilot cursor devin gemini iflow kimi opencode pi qoder reasonix tmux
-ALL_PLATFORMS := feishu telegram discord slack dingtalk wecom weixin qq qqbot line weibo max matrix webex cloud_web tuitui googlechat
+ALL_AGENTS    := acp antigravity claudecode codex copilot cursor devin dsh gemini iflow kimi opencode pi qoder reasonix tmux
+ALL_PLATFORMS := cloud_web dingtalk discord feishu googlechat line matrix max qq qqbot slack telegram tuitui webex wecom weibo weixin wps_agentspace wps_xiezuo yuanbao
 ALL_EXTRAS    := web
 
 COMMA := ,
@@ -85,7 +83,7 @@ build: web
 	go build $(_TAGS_FLAG) -ldflags "$(LDFLAGS)" -o $(APP) $(CMD)
 
 build-noweb:
-	go build $(_TAGS_FLAG) -tags 'no_web' -ldflags "$(LDFLAGS)" -o $(APP) $(CMD)
+	go build -tags '$(strip $(_BUILD_TAGS) no_web)' -ldflags "$(LDFLAGS)" -o $(APP) $(CMD)
 
 run: build
 	./$(APP)
@@ -147,20 +145,15 @@ test-release-local:
 	go test ./core -run 'TestEngineSendToSessionWithAttachments|TestProcessInteractiveEvents_SuppressesDuplicateSideChannelText|TestCmdList_AllSessionsVisibleAfterRepeatedNew|TestCmdList_SessionVisibleDuringAgentProcessing|TestEngine_Alias|TestEngine_BannedWords|TestEngine_DisabledCommands'
 	go test ./platform/feishu -run 'TestUserIDFromEventFallsBackToUserID|TestResolveUserNameSkipsInvalidLookupID|TestNew_CanDisableInteractiveCards'
 
-# Blackbox smoke: in-process engine and the real binary (driven through its
-# bridge WebSocket) across platform capability profiles. Needs one agent CLI
-# on PATH; agent turns use the scripted fake model (tests/blackbox/fakemodel),
-# so no model key is needed. TestSmoke_AgentTurn uses a real model and skips
-# without credentials. Point CC_BLACKBOX_BINARY at a built artifact to test
-# it instead of the current tree.
+# Blackbox smoke: test-instrumented loopback-only binary across profiles.
+# Needs an agent CLI; fake-model turns use no model key. Live tests require
+# explicit -blackbox-live. CC_BLACKBOX_BINARY is rejected by this fixture path.
 test-blackbox-smoke:
 	go test -tags blackbox -count=1 -race ./tests/blackbox/smoke/
 
-# Release smoke: the pre-release gate. Same suite, but fail-closed: the agents
-# in CC_BLACKBOX_REQUIRE_AGENTS (default claudecode,codex) must be installed,
-# otherwise the run fails instead of skipping their scenarios. Set
-# CC_BLACKBOX_BINARY=dist/cc-connect-<ver>-<os>-<arch> to test the release
-# artifact itself instead of building the current tree.
+# Source smoke: fail closed if a required CLI is missing. This builds a
+# test-only binary, not the ordinary release artifact. It does not cover
+# credential-free in-process execution or replace release artifact validation.
 RELEASE_SMOKE_AGENTS ?= claudecode,codex
 test-release-smoke:
 	CC_BLACKBOX_REQUIRE_AGENTS=$(RELEASE_SMOKE_AGENTS) go test -tags blackbox,no_web -count=1 -race -timeout=30m ./tests/blackbox/fakemodel/ ./tests/blackbox/smoke/
