@@ -33,12 +33,12 @@ jobs:
         name: Archive source before executing project code
         run: |
           set -euo pipefail
-          tar -czf candidate-source.tar.gz candidate
+          tar -czf candidate-source.tar.gz candidate .ci/nfpm.yaml
           digest=$(sha256sum candidate-source.tar.gz | cut -d' ' -f1)
           manifest=$(cut -d' ' -f1 .ci/manifest.sha256)
           echo "archive_sha=$digest" >> "$GITHUB_OUTPUT"
           echo "manifest_sha=$manifest" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "bootstrap_commit=$GITHUB_SHA" "manifest_sha256=$manifest" "source_archive_sha256=$digest" > SOURCE-PROVENANCE.txt
+          printf '%s\n' "bootstrap_commit=$GITHUB_SHA" "manifest_sha256=$manifest" "source_archive_sha256=$digest" "packaging_config_sha256=$(sha256sum .ci/nfpm.yaml | cut -d\' \' -f1)" > SOURCE-PROVENANCE.txt
       - uses: actions/upload-artifact@v4
         with:
           name: candidate-source-${{ github.run_id }}
@@ -110,8 +110,8 @@ jobs:
             dist/pkg/usr/bin/cc-connect --version
             go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.1
             export VERSION=0.0.0~candidate NFPM_ARCH=amd64
-            "$(go env GOPATH)/bin/nfpm" package --config packaging/nfpm.yaml --packager deb --target dist/cc-connect_candidate_amd64.deb
-            "$(go env GOPATH)/bin/nfpm" package --config packaging/nfpm.yaml --packager rpm --target dist/cc-connect-candidate.x86_64.rpm
+            "$(go env GOPATH)/bin/nfpm" package --config ../.ci/nfpm.yaml --packager deb --target dist/cc-connect_candidate_amd64.deb
+            "$(go env GOPATH)/bin/nfpm" package --config ../.ci/nfpm.yaml --packager rpm --target dist/cc-connect-candidate.x86_64.rpm
           '
       - name: Smoke install packages
         working-directory: candidate
