@@ -135,7 +135,7 @@ jobs:
 
   blackbox-and-format:
     needs: source
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/download-artifact@v4
@@ -161,7 +161,7 @@ jobs:
           set -euo pipefail
           git init -q
           git add -f .
-          gofmt -w tests/blackbox/helper/env.go tests/blackbox/platform/permission_binding_test.go tests/blackbox/platform/profile.go tests/blackbox/smoke/fakemodel_test.go tests/blackbox/smoke/permission_action_test.go
+          gofmt -w core/bridge.go core/bridge_permission_binding_test.go tests/blackbox/helper/env.go tests/blackbox/platform/permission_binding_test.go tests/blackbox/platform/profile.go tests/blackbox/smoke/fakemodel_test.go tests/blackbox/smoke/permission_action_test.go
           git diff --binary > ../format.patch
           python3 -c 'import base64,gzip;print("FORMAT_PATCH_55="+base64.b64encode(gzip.compress(open("../format.patch","rb").read())).decode())'
           git checkout -- .
