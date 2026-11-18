@@ -88,6 +88,14 @@ jobs:
             go test -race ./...
             go test ./core/ -run TestCUJ
           '
+      - name: Restore pristine source after tests
+        env:
+          ARCHIVE_SHA: ${{ needs.source.outputs.archive_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s  candidate-source.tar.gz\\n' "$ARCHIVE_SHA" | sha256sum -c -
+          rm -rf candidate
+          tar -xzf candidate-source.tar.gz
       - name: Build candidate binary after tests
         working-directory: candidate
         env:
@@ -96,6 +104,7 @@ jobs:
           set -euo pipefail
           private_home=$(mktemp -d)
           env -i PATH="$PATH" HOME="$private_home" LANG=C.UTF-8 CI=true MANIFEST_SHA="$MANIFEST_SHA" GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org bash -euo pipefail -c '
+            (cd web && pnpm install --frozen-lockfile && pnpm build)
             mkdir -p dist/pkg/usr/bin
             CGO_ENABLED=0 go build -tags goolm -trimpath -ldflags "-s -w -X main.version=0.0.0-candidate -X main.commit=$MANIFEST_SHA" -o dist/pkg/usr/bin/cc-connect ./cmd/cc-connect
             dist/pkg/usr/bin/cc-connect --version
