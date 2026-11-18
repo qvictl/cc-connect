@@ -529,3 +529,88 @@ func TestGoalFollowingForegroundStillClosesWhenIdle(t *testing.T) {
 	env.waitFor("foreground task unlock", time.Second, func() bool { return !env.engine.sessions.GetOrCreateActive(key).Busy() })
 	env.waitFor("completed foreground session idle close", time.Second, func() bool { return !s.Alive() })
 }
+
+// A concurrent replacement must survive failed Goal cancellation, but the
+// captured process must close and its recovery intent must be durably revoked.
+func TestGoalCancelFailureClosesCapturedSessionAfterReplacement(t *testing.T) {
+	env := newCUJEnv(t)
+	t.Cleanup(func() { _ = env.engine.Stop() })
+	key := "test:goal-replacement"
+	stored := env.engine.sessions.GetOrCreateActive(key)
+	stored.SetResumeGoal(true)
+	env.engine.sessions.Save()
+	oldSession := newControllableSession("goal-old")
+	newSession := newControllableSession("goal-new")
+	oldState := &interactiveState{agentSession: oldSession, platform: env.plat,
+		replyCtx: "ctx", busySession: stored, goalSessionStore: env.engine.sessions}
+	newState := &interactiveState{agentSession: newSession, platform: env.plat, replyCtx: "next"}
+	env.engine.interactiveMu.Lock()
+	env.engine.interactiveStates[key] = oldState
+	env.engine.interactiveMu.Unlock()
+	oldSession.cancelTurnFn = func() error {
+		env.engine.interactiveMu.Lock()
+		env.engine.interactiveStates[key] = newState
+		env.engine.interactiveMu.Unlock()
+		return errors.New("goal interrupt failed")
+	}
+	if !env.engine.stopInteractiveSession(key, env.plat, "ctx") {
+		t.Fatal("failed Goal stop was not handled")
+	}
+	env.waitFor("captured Goal process closes", time.Second, func() bool { return oldSession.closeFinished.Load() })
+	env.engine.interactiveMu.Lock()
+	current := env.engine.interactiveStates[key]
+	env.engine.interactiveMu.Unlock()
+	if current != newState || !newSession.Alive() || newSession.closeFinished.Load() {
+		t.Fatal("replacement state was removed or closed")
+	}
+	if stored.GetResumeGoal() {
+		t.Fatal("captured Goal retained recovery intent")
+	}
+	reloaded := NewSessionManager(filepath.Join(env.tempDir, "sessions.json"))
+	if reloaded.GetOrCreateActive(key).GetResumeGoal() {
+		t.Fatal("captured Goal stop was not persisted")
+	}
+}
+
+// A replacement may deliberately start a new Goal while CancelTurn is blocked.
+func TestGoalCancelFailureDoesNotRevokeReplacementIntent(t *testing.T) {
+	env := newCUJEnv(t)
+	t.Cleanup(func() { _ = env.engine.Stop() })
+	key := "test:goal-replacement"
+	stored := env.engine.sessions.GetOrCreateActive(key)
+	stored.SetResumeGoal(true)
+	env.engine.sessions.Save()
+	oldSession := newControllableSession("goal-old")
+	newSession := newControllableSession("goal-new")
+	oldState := &interactiveState{agentSession: oldSession, platform: env.plat,
+		replyCtx: "ctx", busySession: stored, goalSessionStore: env.engine.sessions}
+	newState := &interactiveState{agentSession: newSession, platform: env.plat, replyCtx: "next"}
+	env.engine.interactiveMu.Lock()
+	env.engine.interactiveStates[key] = oldState
+	env.engine.interactiveMu.Unlock()
+	oldSession.cancelTurnFn = func() error {
+		env.engine.interactiveMu.Lock()
+		env.engine.interactiveStates[key] = newState
+		stored.SetResumeGoal(true)
+		env.engine.sessions.Save()
+		env.engine.interactiveMu.Unlock()
+		return errors.New("goal interrupt failed")
+	}
+	if !env.engine.stopInteractiveSession(key, env.plat, "ctx") {
+		t.Fatal("failed Goal stop was not handled")
+	}
+	env.waitFor("captured Goal process closes", time.Second, func() bool { return oldSession.closeFinished.Load() })
+	env.engine.interactiveMu.Lock()
+	current := env.engine.interactiveStates[key]
+	env.engine.interactiveMu.Unlock()
+	if current != newState || !newSession.Alive() || newSession.closeFinished.Load() {
+		t.Fatal("replacement state was removed or closed")
+	}
+	if !stored.GetResumeGoal() {
+		t.Fatal("replacement Goal lost recovery intent")
+	}
+	reloaded := NewSessionManager(filepath.Join(env.tempDir, "sessions.json"))
+	if !reloaded.GetOrCreateActive(key).GetResumeGoal() {
+		t.Fatal("replacement Goal recovery intent was not persisted")
+	}
+}

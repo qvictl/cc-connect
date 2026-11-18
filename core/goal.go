@@ -193,7 +193,17 @@ func (e *Engine) cmdGoal(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgGoalError, err))
 		return
 	}
-	session.SetResumeGoal(goal != nil && goal.Status == "active")
+	state.mu.Lock()
+	if !state.stopped {
+		// Read-only queries and edits must not revive a stopped Goal.
+		if c.action == "set" || c.action == "resume" {
+			state.goalRecoveryBlocked = false
+		}
+		if !state.goalRecoveryBlocked {
+			session.SetResumeGoal(goal != nil && goal.Status == "active")
+		}
+	}
+	state.mu.Unlock()
 	sessions.Save()
 	if c.action == "clear" {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgGoalCleared))
@@ -203,12 +213,17 @@ func (e *Engine) cmdGoal(p Platform, msg *Message, args []string) {
 }
 
 func (e *Engine) relayGoalEvent(state *interactiveState, session *Session, sessions *SessionManager, event Event) {
-	session.SetResumeGoal(event.Goal != nil && event.Goal.Status == "active")
-	sessions.Save()
 	state.mu.Lock()
+	if state.stopped || state.goalRecoveryBlocked {
+		state.mu.Unlock()
+		return
+	}
+	// Serialize the intent write with Stop's block-and-revoke operation.
+	session.SetResumeGoal(event.Goal != nil && event.Goal.Status == "active")
 	state.goalSessionStore = sessions
 	p, replyCtx := state.platform, state.replyCtx
 	state.mu.Unlock()
+	sessions.Save()
 	e.notice(p, replyCtx, e.renderGoal(event.Goal))
 }
 

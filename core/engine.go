@@ -566,9 +566,10 @@ type queuedMessage struct {
 
 // interactiveState tracks a running interactive agent session and its permission state.
 type interactiveState struct {
-	goalMu           sync.Mutex // serializes explicit native-goal commands
-	goalSessionStore *SessionManager
-	agentSession     AgentSession
+	goalMu              sync.Mutex // serializes explicit native-goal commands
+	goalSessionStore    *SessionManager
+	goalRecoveryBlocked bool // protected by mu; Stop blocks stale Goal events until explicit set/resume
+	agentSession        AgentSession
 	// busySession is the core.Session whose busy lock guards the in-flight
 	// turn. Set by getOrCreateInteractiveStateWith so /stop can release the
 	// lock after tearing the turn down (#1830).
@@ -747,25 +748,25 @@ type modelSwitchState struct {
 
 // pendingPermission represents a permission request waiting for user response.
 type pendingPermission struct {
-	RequestID       string
-	CallbackID      string // unique per permission prompt, including across agent restarts
-	ToolName        string
-	ToolInput       map[string]any
-	InputPreview    string
-	Questions       []UserQuestion // non-nil for AskUserQuestion
-	Answers         map[int]string // collected answers keyed by question index
-	CurrentQuestion int            // index of the question currently being asked
-	Resolved        chan struct{}  // closed when user responds
-	resolveOnce     sync.Once
-	completed       chan struct{} // terminal outcome, distinct from foreground reader release
-	completionInit  sync.Once
-	completionOnce  sync.Once
-	responseClaimed bool // guarded by interactiveState.mu; answer/withdraw ownership
-	withdrawalRequested bool // background owner exited while an answer was in flight
-	respondMu       sync.Mutex // serializes callbacks and multi-question answers
-	responding      bool       // guarded by interactiveState.mu
-	retryable       bool       // failed receipt; guarded by interactiveState.mu
-	retryContent    string     // last attempted answer; guarded by respondMu
+	RequestID           string
+	CallbackID          string // unique per permission prompt, including across agent restarts
+	ToolName            string
+	ToolInput           map[string]any
+	InputPreview        string
+	Questions           []UserQuestion // non-nil for AskUserQuestion
+	Answers             map[int]string // collected answers keyed by question index
+	CurrentQuestion     int            // index of the question currently being asked
+	Resolved            chan struct{}  // closed when user responds
+	resolveOnce         sync.Once
+	completed           chan struct{} // terminal outcome, distinct from foreground reader release
+	completionInit      sync.Once
+	completionOnce      sync.Once
+	responseClaimed     bool       // guarded by interactiveState.mu; answer/withdraw ownership
+	withdrawalRequested bool       // background owner exited while an answer was in flight
+	respondMu           sync.Mutex // serializes callbacks and multi-question answers
+	responding          bool       // guarded by interactiveState.mu
+	retryable           bool       // failed receipt; guarded by interactiveState.mu
+	retryContent        string     // last attempted answer; guarded by respondMu
 }
 
 func (s *interactiveState) stopSignal() <-chan struct{} {
@@ -6290,7 +6291,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					break
 				}
 				toolSteps = append(toolSteps, ToolStep{
-					Timestamp: time.Now(),
+					Timestamp:  time.Now(),
 					Kind:       ToolStepKindTool,
 					Name:       event.ToolName,
 					ToolCallID: toolCallID(event),
@@ -7553,7 +7554,7 @@ func mergeRichToolResult(steps []ToolStep, event Event, result string, maxLen in
 			summary = toolInputPreview(summary, maxLen)
 		}
 		steps = append(steps, ToolStep{
-			Timestamp: time.Now(),
+			Timestamp:  time.Now(),
 			ToolCallID: callID,
 			Kind:       ToolStepKindTool,
 			Name:       toolName,
@@ -11702,7 +11703,20 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 		// Keep the state in the map so the next message reuses this session.
 		// Don't markStopped — the session is still usable.
 		// Don't delete from interactiveStates — keep it alive.
+		// Revoke only the Goal active when Stop claimed this state. Do this
+		// before cancellation can replace it, so a failed interrupt cannot
+		// leave the captured Goal resumable or revoke a newer Goal afterward.
+		state.mu.Lock()
+		goalStore, goalSession := state.goalSessionStore, state.busySession
+		state.goalRecoveryBlocked = true
+		if goalStore != nil && goalSession != nil {
+			goalSession.SetResumeGoal(false)
+		}
+		state.mu.Unlock()
 		e.interactiveMu.Unlock()
+		if goalStore != nil && goalSession != nil {
+			goalStore.Save()
+		}
 
 		if pending != nil {
 			pending.resolve()
@@ -11738,21 +11752,10 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 			return true
 		}
 		e.interactiveMu.Unlock()
-		state.mu.Lock()
-		goalStore, goalSession := state.goalSessionStore, state.busySession
-		state.mu.Unlock()
-		if cancelErr == nil {
-			if goalStore != nil && goalSession != nil {
-				goalSession.SetResumeGoal(false)
-				goalStore.Save()
-			}
-		}
 		if cancelErr != nil {
 			slog.Warn("agent session CancelTurn failed, falling back to Close",
 				"session_key", sessionKey, "error", cancelErr)
 			if goalStore != nil && goalSession != nil {
-				goalSession.SetResumeGoal(false)
-				goalStore.Save()
 				e.send(closePlatform, closeReplyCtx, e.i18n.Tf(MsgGoalError, cancelErr))
 			}
 			// Cancellation ran outside interactiveMu. Do not remove a newer
@@ -12038,7 +12041,7 @@ func (e *Engine) processCompressEvents(state *interactiveState, session *Session
 				if tn == "" {
 					tn = "tool"
 				}
-				output.WriteString(budget.take(fmt.Sprintf(e.i18n.T(MsgToolResult), tn, out)+"\n"))
+				output.WriteString(budget.take(fmt.Sprintf(e.i18n.T(MsgToolResult), tn, out) + "\n"))
 			}
 		case EventResult:
 			// Finish compression before draining queued turns, which may run for minutes.

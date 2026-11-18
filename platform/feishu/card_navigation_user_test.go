@@ -61,3 +61,25 @@ func TestCardAction_NavigationCarriesClickerForSharedSessions(t *testing.T) {
 		})
 	}
 }
+
+func TestCardAction_NavigationWithoutOperatorFailsClosed(t *testing.T) {
+	for _, operator := range []*callback.Operator{nil, {OpenID: ""}} {
+		for _, key := range []string{"feishu:oc_chat:ou_admin", "feishu:oc_chat", "feishu:oc_chat:root:om_root"} {
+			p := &Platform{platformName: "feishu"}
+			called := false
+			p.SetUserAwareCardNavigationHandler(func(action, sessionKey, userID string) *core.Card {
+				called = true
+				return core.NewCard().Markdown("must not run").Build()
+			})
+			event := &callback.CardActionTriggerEvent{Event: &callback.CardActionTriggerRequest{
+				Operator: operator,
+				Action:   &callback.CallBackAction{Value: map[string]any{"action": "act:/provider b", "session_key": key}},
+				Context:  &callback.Context{OpenChatID: "oc_chat", OpenMessageID: "om_card"},
+			}}
+			resp, err := p.onCardAction(event)
+			if err != nil || resp != nil || called || len(p.cardActionMsgIDs) != 0 {
+				t.Fatalf("missing operator borrowed card owner for %q: response=%#v err=%v called=%v", key, resp, err, called)
+			}
+		}
+	}
+}
