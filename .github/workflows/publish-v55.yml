@@ -1,0 +1,156 @@
+name: Publish verified v55 fork release
+on:
+  push:
+    branches: [ci/integrated-candidate-20261118]
+    paths: ['.release/v55']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: publish-qvictl-v55
+  cancel-in-progress: false
+env:
+  TAG: v0.0.0-qvictl.v55.20261118
+  VERSION: 0.0.0-qvictl.v55.20261118
+jobs:
+  package:
+    if: github.repository == 'qvictl/cc-connect'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      source_commit: ${{ steps.source.outputs.source_commit }}
+    steps:
+      - name: Verify successful exact validation run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/qvictl/cc-connect/actions/runs/44279851542 > run.json
+          jq -e '.conclusion == "success" and .head_sha == "cc28b28710861def4bb0ab122dad88e465cd431d"' run.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-source-44279851542
+          run-id: 44279851542
+          github-token: ${{ github.token }}
+      - id: source
+        name: Verify tested source and create exact source commit
+        run: |
+          set -euo pipefail
+          echo '7e07b7595c8a1effd5edb8e062e91b9a7949c99341c8fb895bd55428ef9baf69  candidate-source.tar.gz' | sha256sum -c -
+          grep -Fx 'manifest_sha256=e562111af802c5df31d74f559a1df20dad01e072e94f6e10a718146549e05f05' SOURCE-PROVENANCE.txt
+          tar -xzf candidate-source.tar.gz
+          cd candidate
+          git init
+          git config user.name qvictl
+          git config user.email 141409325+qvictl@users.noreply.github.com
+          git fetch https://github.com/qvictl/cc-connect.git 7110ef22a2689775fb0ce6ee697315375c33b538
+          git add -f .
+          tree=$(git write-tree)
+          test "$tree" = 8f46344462095b6007fc9fa5a23acb91329a96c4
+          source_commit=7110ef22a2689775fb0ce6ee697315375c33b538
+          git update-ref refs/heads/release-source "$source_commit"
+          git bundle create ../source.bundle refs/heads/release-source
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "release_tag=$TAG" "source_commit=$source_commit" "source_tree=$tree" "validated_run=https://github.com/qvictl/cc-connect/actions/runs/44279851542" >> ../SOURCE-PROVENANCE.txt
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: candidate/go.mod
+          cache: false
+      - name: Build versioned Linux amd64 packages from tested source
+        working-directory: candidate
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          private_home=$(mktemp -d)
+          env -i PATH="$PATH" HOME="$private_home" LANG=C.UTF-8 CI=true VERSION="$VERSION" SOURCE_COMMIT="$SOURCE_COMMIT" GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org bash -euo pipefail -c '
+            (cd web && pnpm install --frozen-lockfile && pnpm build)
+            go mod download
+            go mod verify
+            mkdir -p dist/pkg/usr/bin
+            CGO_ENABLED=0 go build -tags goolm -trimpath -ldflags "-s -w -X main.version=$VERSION -X main.commit=$SOURCE_COMMIT" -o dist/pkg/usr/bin/cc-connect ./cmd/cc-connect
+            dist/pkg/usr/bin/cc-connect --version | tee dist/VERSION.txt
+            grep -F "$VERSION" dist/VERSION.txt
+            go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.1
+            export NFPM_ARCH=amd64
+            "$(go env GOPATH)/bin/nfpm" package --config ../.ci/nfpm.yaml --packager deb --target "dist/cc-connect_${VERSION}_linux_amd64.deb"
+            "$(go env GOPATH)/bin/nfpm" package --config ../.ci/nfpm.yaml --packager rpm --target "dist/cc-connect_${VERSION}_linux_amd64.rpm"
+          '
+      - name: Verify version and install both packages
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          docker run --rm -e VERSION -v "$PWD/dist:/dist:ro" ubuntu:24.04 bash -euo pipefail -c 'apt-get update -qq; apt-get install -y -qq /dist/*.deb; cc-connect --version | grep -F "$VERSION"; dpkg -s cc-connect'
+          docker run --rm -e VERSION -v "$PWD/dist:/dist:ro" fedora:43 bash -euo pipefail -c 'dnf install -y -q /dist/*.rpm; cc-connect --version | grep -F "$VERSION"; rpm -q cc-connect'
+          cp ../SOURCE-PROVENANCE.txt dist/
+          (cd dist && sha256sum ./*.deb ./*.rpm VERSION.txt SOURCE-PROVENANCE.txt > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages-${{ github.run_id }}
+          path: |
+            candidate/dist/*.deb
+            candidate/dist/*.rpm
+            candidate/dist/SHA256SUMS
+            candidate/dist/VERSION.txt
+            candidate/dist/SOURCE-PROVENANCE.txt
+            source.bundle
+          if-no-files-found: error
+          retention-days: 30
+  publish:
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages-${{ github.run_id }}
+      - name: Require source-commit repository CI before release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.package.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do
+            gh api "repos/qvictl/cc-connect/commits/$SOURCE_COMMIT/check-runs" > checks.json
+            if jq -e '[.check_runs[] | select(.name == "lint" or .name == "unit-test" or .name == "blackbox-smoke" or .name == "smoke-test" or .name == "regression-test" or .name == "performance-test") | select(.status == "completed" and .conclusion != "success")] | length > 0' checks.json >/dev/null; then
+              jq '.check_runs[] | {name,status,conclusion,html_url}' checks.json
+              exit 1
+            fi
+            if jq -e '[.check_runs[] | select(.status == "completed" and .conclusion == "success") | .name] as $done | ["lint","unit-test","blackbox-smoke","smoke-test","regression-test","performance-test"] | all(. as $n | $done | index($n))' checks.json >/dev/null; then
+              echo 'All six repository CI checks passed on the exact source commit'
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'Timed out waiting for source-commit CI; no release published'
+          exit 1
+      - name: Publish new tag only after successful packaging
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.package.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          cd candidate/dist
+          sha256sum -c SHA256SUMS
+          cd ../..
+          git init publish-source
+          cd publish-source
+          git fetch ../source.bundle refs/heads/release-source
+          test "$(git rev-parse FETCH_HEAD)" = "$SOURCE_COMMIT"
+          test "$(git rev-parse FETCH_HEAD^{tree})" = 8f46344462095b6007fc9fa5a23acb91329a96c4
+          test -z "$(git ls-remote https://github.com/qvictl/cc-connect.git refs/tags/$TAG)"
+          git tag "$TAG" "$SOURCE_COMMIT"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push https://github.com/qvictl/cc-connect.git "refs/tags/$TAG:refs/tags/$TAG"
+          cd ../candidate/dist
+          printf 'Fork integration v55. Linux amd64 only (deb and rpm).\n\nSource tree: 8f46344462095b6007fc9fa5a23acb91329a96c4\nSource commit: %s\nManifest SHA256: e562111af802c5df31d74f559a1df20dad01e072e94f6e10a718146549e05f05\n\nWeb tests, Windows cross-compilation, full Go build, tests, race tests and CUJ passed in https://github.com/qvictl/cc-connect/actions/runs/44279851542 . Versioned packages rebuilt from that exact source tree and installation-smoked on Ubuntu 24.04 and Fedora 43. Credential-gated live tests were not enabled.\n' "$SOURCE_COMMIT" > RELEASE-NOTES.txt
+          gh release create "$TAG" --repo qvictl/cc-connect --verify-tag --prerelease --title "cc-connect fork integration v55" --notes-file RELEASE-NOTES.txt ./*.deb ./*.rpm SHA256SUMS VERSION.txt SOURCE-PROVENANCE.txt
