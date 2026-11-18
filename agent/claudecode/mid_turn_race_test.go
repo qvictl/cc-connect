@@ -106,4 +106,29 @@ func TestClaudeSession_SecondHeldResultMerges(t *testing.T) {
 	}
 }
 
+func TestMergeTurnResults_SilentMarkers(t *testing.T) {
+	tests := []struct {
+		name  string
+		first string
+		last  string
+		want  string
+	}{
+		{"both silent", "NO_REPLY", "NO_REPLY", "NO_REPLY"},
+		{"first silent", "NO_REPLY", "BANANA", "BANANA"},
+		{"second silent", "ALPHA", "NO_REPLY", "ALPHA"},
+		{"both text", "ALPHA", "BANANA", "ALPHA\n\nBANANA"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeTurnResults(
+				core.Event{Content: tt.first},
+				core.Event{Content: tt.last},
+			)
+			if got.Content != tt.want {
+				t.Fatalf("merged.Content = %q, want %q", got.Content, tt.want)
+			}
+		})
+	}
+}
+
 var _ io.WriteCloser = (*resultOnWrite)(nil)

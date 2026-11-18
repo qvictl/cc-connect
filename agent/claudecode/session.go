@@ -1778,9 +1778,24 @@ func (cs *claudeSession) emit(evt core.Event) {
 // both, in order, and the usage of both.
 func mergeTurnResults(first, second core.Event) core.Event {
 	merged := second
+	firstText := strings.TrimSpace(first.Content)
+	secondText := strings.TrimSpace(second.Content)
+	firstSilent := isBareSilentReply(firstText)
+	secondSilent := isBareSilentReply(secondText)
 	switch {
-	case strings.TrimSpace(first.Content) == "":
-	case strings.TrimSpace(second.Content) == "":
+	case firstSilent && secondSilent:
+		// Both turns chose silence. Keep one marker so the engine's
+		// isSilentReply check suppresses the reply; concatenating two
+		// markers produces "NO_REPLY\n\nNO_REPLY", which is not a bare
+		// marker and leaks the token to the user.
+		merged.Content = "NO_REPLY"
+	case firstSilent:
+		merged.Content = second.Content
+	case secondSilent:
+		merged.Content = first.Content
+	case firstText == "":
+		merged.Content = second.Content
+	case secondText == "":
 		merged.Content = first.Content
 	default:
 		merged.Content = first.Content + "\n\n" + second.Content
@@ -1790,6 +1805,13 @@ func mergeTurnResults(first, second core.Event) core.Event {
 	merged.CacheCreationInputTokens += first.CacheCreationInputTokens
 	merged.CacheReadInputTokens += first.CacheReadInputTokens
 	return merged
+}
+
+// isBareSilentReply mirrors core.isSilentReply for the merge path (the core
+// helper is unexported). Only a whole-reply marker is treated as silence;
+// trailing markers in mixed content are left for the engine to strip.
+func isBareSilentReply(text string) bool {
+	return strings.EqualFold(strings.TrimSpace(text), "NO_REPLY")
 }
 
 // defaultGracefulStopTimeout 是 Close() Phase 1「关掉 stdin、等它自己干净退出」
