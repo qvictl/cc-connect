@@ -1,0 +1,16 @@
+name: cc-connect
+arch: ${NFPM_ARCH}
+version: ${VERSION}
+maintainer: qvictl <141409325+qvictl@users.noreply.github.com>
+description: Integrated cc-connect candidate validated by GitHub Actions
+homepage: https://github.com/qvictl/cc-connect
+license: MIT
+section: utils
+priority: optional
+contents:
+  - src: dist/pkg/usr/bin/cc-connect
+    dst: /usr/bin/cc-connect
+    file_info:
+      mode: 0755
+rpm:
+  group: Applications/System
