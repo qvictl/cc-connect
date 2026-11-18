@@ -1,0 +1,92 @@
+name: Independent PR 2140 validation
+on:
+  push:
+    branches: [ci/integrated-candidate-20261118]
+    paths: ['.pr-ci/2140/**']
+permissions:
+  contents: read
+concurrency:
+  group: independent-pr-2140-validation
+  cancel-in-progress: false
+jobs:
+  source:
+    if: github.repository == 'qvictl/cc-connect'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      archive_sha: ${{ steps.bundle.outputs.archive_sha }}
+      manifest_sha: ${{ steps.bundle.outputs.manifest_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify and reconstruct pinned source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp .pr-ci/2140/reconstruction.json.gz .ci/reconstruction.json.gz
+          cp .pr-ci/2140/manifest.sha256 .ci/manifest.sha256
+          gzip -dk .ci/reconstruction.json.gz
+          (cd .ci && sha256sum -c manifest.sha256)
+          digest=$(cut -d' ' -f1 .ci/manifest.sha256)
+          python3 .ci/reconstruct.py .ci/reconstruction.json "$digest" candidate
+      - id: bundle
+        name: Archive source before executing project code
+        run: |
+          set -euo pipefail
+          tar -czf candidate-source.tar.gz candidate .ci/nfpm.yaml
+          digest=$(sha256sum candidate-source.tar.gz | cut -d' ' -f1)
+          manifest=$(cut -d' ' -f1 .ci/manifest.sha256)
+          echo "archive_sha=$digest" >> "$GITHUB_OUTPUT"
+          echo "manifest_sha=$manifest" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "bootstrap_commit=$GITHUB_SHA" "manifest_sha256=$manifest" "source_archive_sha256=$digest" "packaging_config_sha256=$(sha256sum .ci/nfpm.yaml | cut -d' ' -f1)" > SOURCE-PROVENANCE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-source-${{ github.run_id }}
+          path: |
+            candidate-source.tar.gz
+            SOURCE-PROVENANCE.txt
+          retention-days: 14
+          if-no-files-found: error
+  test:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-source-${{ github.run_id }}
+      - name: Verify exact source
+        env:
+          ARCHIVE_SHA: ${{ needs.source.outputs.archive_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s  candidate-source.tar.gz\n' "$ARCHIVE_SHA" | sha256sum -c -
+          tar -xzf candidate-source.tar.gz
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: candidate/go.mod
+          cache: false
+      - name: Native test dependency
+        run: sudo apt-get update -qq && sudo apt-get install -y libolm-dev pkg-config
+      - name: Build and test exact candidate
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          private_home=$(mktemp -d)
+          env -i PATH="$PATH" HOME="$private_home" LANG=C.UTF-8 CI=true GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org bash -euo pipefail -c '
+            (cd web && pnpm install --frozen-lockfile && pnpm build)
+            go mod download
+            go mod verify
+            go build ./...
+            go test ./...
+            go test -race ./...
+            go test ./core/ -run TestCUJ
+          '
