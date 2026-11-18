@@ -132,3 +132,45 @@ jobs:
             candidate/dist/SOURCE-PROVENANCE.txt
           retention-days: 14
           if-no-files-found: error
+
+  blackbox-and-format:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-source-${{ github.run_id }}
+      - name: Verify exact source
+        env:
+          ARCHIVE_SHA: ${{ needs.source.outputs.archive_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s  candidate-source.tar.gz\n' "$ARCHIVE_SHA" | sha256sum -c -
+          tar -xzf candidate-source.tar.gz
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: candidate/go.mod
+          cache: false
+      - name: Verify changed Go formatting without modifying tested source
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          git init -q
+          git add -f .
+          find tests/blackbox -name '*.go' -print0 | xargs -0 gofmt -w
+          git diff --binary > ../format.patch
+          python3 -c 'import base64,gzip;print("FORMAT_PATCH_55="+base64.b64encode(gzip.compress(open("../format.patch","rb").read())).decode())'
+          git checkout -- .
+          test ! -s ../format.patch
+      - name: Install pinned fake-model agent CLIs
+        run: npm install -g @anthropic-ai/claude-code@2.1.317 @openai/codex@0.166.0
+      - name: Required blackbox permission and fake-model smoke
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          private_home=$(mktemp -d)
+          env -i PATH="$PATH" HOME="$private_home" LANG=C.UTF-8 CI=true GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org CC_BLACKBOX_REQUIRE_AGENTS=claudecode,codex go test -tags blackbox,no_web -count=1 -race -timeout=30m ./tests/blackbox/fakemodel/ ./tests/blackbox/smoke/
