@@ -1,0 +1,124 @@
+name: Integrated candidate validation
+on:
+  push:
+    branches: [ci/integrated-candidate-20261118]
+    paths: ['.ci/**']
+permissions:
+  contents: read
+concurrency:
+  group: integrated-candidate-validation
+  cancel-in-progress: false
+jobs:
+  source:
+    if: github.repository == 'qvictl/cc-connect'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      archive_sha: ${{ steps.bundle.outputs.archive_sha }}
+      manifest_sha: ${{ steps.bundle.outputs.manifest_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify and reconstruct pinned source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gzip -dk .ci/reconstruction.json.gz
+          (cd .ci && sha256sum -c manifest.sha256)
+          digest=$(cut -d' ' -f1 .ci/manifest.sha256)
+          python3 .ci/reconstruct.py .ci/reconstruction.json "$digest" candidate
+      - id: bundle
+        name: Archive source before executing project code
+        run: |
+          set -euo pipefail
+          tar -czf candidate-source.tar.gz candidate
+          digest=$(sha256sum candidate-source.tar.gz | cut -d' ' -f1)
+          manifest=$(cut -d' ' -f1 .ci/manifest.sha256)
+          echo "archive_sha=$digest" >> "$GITHUB_OUTPUT"
+          echo "manifest_sha=$manifest" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "bootstrap_commit=$GITHUB_SHA" "manifest_sha256=$manifest" "source_archive_sha256=$digest" > SOURCE-PROVENANCE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-source-${{ github.run_id }}
+          path: |
+            candidate-source.tar.gz
+            SOURCE-PROVENANCE.txt
+          retention-days: 14
+          if-no-files-found: error
+  test-and-package:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-source-${{ github.run_id }}
+      - name: Verify exact source
+        env:
+          ARCHIVE_SHA: ${{ needs.source.outputs.archive_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s  candidate-source.tar.gz\n' "$ARCHIVE_SHA" | sha256sum -c -
+          tar -xzf candidate-source.tar.gz
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: candidate/go.mod
+          cache: false
+      - name: Native test dependency
+        run: sudo apt-get update -qq && sudo apt-get install -y libolm-dev pkg-config
+      - name: Build and test exact candidate
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          private_home=$(mktemp -d)
+          env -i PATH="$PATH" HOME="$private_home" LANG=C.UTF-8 CI=true GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org bash -euo pipefail -c '
+            (cd web && pnpm install --frozen-lockfile && pnpm build)
+            go mod download
+            go mod verify
+            go build ./...
+            go test ./...
+            go test -race ./...
+            go test ./core/ -run TestCUJ
+          '
+      - name: Build candidate binary after tests
+        working-directory: candidate
+        env:
+          MANIFEST_SHA: ${{ needs.source.outputs.manifest_sha }}
+        run: |
+          set -euo pipefail
+          private_home=$(mktemp -d)
+          env -i PATH="$PATH" HOME="$private_home" LANG=C.UTF-8 CI=true MANIFEST_SHA="$MANIFEST_SHA" GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org bash -euo pipefail -c '
+            mkdir -p dist/pkg/usr/bin
+            CGO_ENABLED=0 go build -tags goolm -trimpath -ldflags "-s -w -X main.version=0.0.0-candidate -X main.commit=$MANIFEST_SHA" -o dist/pkg/usr/bin/cc-connect ./cmd/cc-connect
+            dist/pkg/usr/bin/cc-connect --version
+            go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.1
+            export VERSION=0.0.0~candidate NFPM_ARCH=amd64
+            "$(go env GOPATH)/bin/nfpm" package --config packaging/nfpm.yaml --packager deb --target dist/cc-connect_candidate_amd64.deb
+            "$(go env GOPATH)/bin/nfpm" package --config packaging/nfpm.yaml --packager rpm --target dist/cc-connect-candidate.x86_64.rpm
+          '
+      - name: Smoke install packages
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/dist:/dist:ro" ubuntu:24.04 bash -euo pipefail -c 'apt-get update -qq && apt-get install -y -qq /dist/cc-connect_*.deb; cc-connect --version; dpkg -s cc-connect'
+          docker run --rm -v "$PWD/dist:/dist:ro" fedora:43 bash -euo pipefail -c 'dnf install -y -q /dist/cc-connect-*.rpm; cc-connect --version; rpm -q cc-connect'
+          cp ../SOURCE-PROVENANCE.txt dist/
+          (cd dist && sha256sum ./*.deb ./*.rpm SOURCE-PROVENANCE.txt > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tested-packages-${{ github.run_id }}
+          path: |
+            candidate/dist/*.deb
+            candidate/dist/*.rpm
+            candidate/dist/SHA256SUMS
+            candidate/dist/SOURCE-PROVENANCE.txt
+          retention-days: 14
+          if-no-files-found: error
