@@ -295,12 +295,12 @@ func (bs *BridgeServer) ConnectedAdapters() []string {
 // BridgePlatform implements core.Platform for a single project.
 // It is a lightweight handle; the actual WebSocket server lives in BridgeServer.
 type BridgePlatform struct {
-	server     *BridgeServer
-	project    string
-	handler    MessageHandler
-	navHandler CardNavigationHandler
+	server              *BridgeServer
+	project             string
+	handler             MessageHandler
+	navHandler          CardNavigationHandler
 	userAwareNavHandler UserAwareCardNavigationHandler
-	navMu sync.RWMutex
+	navMu               sync.RWMutex
 }
 
 // Compile-time interface checks.
@@ -971,18 +971,13 @@ func (a *bridgeAdapter) handleCardAction(raw json.RawMessage) {
 
 	// perm: — permission response; convert to a regular message for the engine
 	if strings.HasPrefix(ca.Action, "perm:") {
-		var responseText string
-		switch ca.Action {
-		case "perm:allow":
-			responseText = "allow"
-		case "perm:deny":
-			responseText = "deny"
-		case "perm:allow_all":
-			responseText = "allow all"
-		default:
+		if _, _, ok := ParsePermissionCallback(ca.Action); !ok {
 			return
 		}
-		a.dispatchAsPermissionResponse(ref, ca.SessionKey, ca.ReplyCtx, responseText)
+		// Keep the prompt binding intact. The engine validates it against
+		// the pending request; translating to plain text would lose that
+		// protection and let an old card answer a newer prompt.
+		a.dispatchAsPermissionResponse(ref, ca.SessionKey, ca.ReplyCtx, ca.Action)
 		return
 	}
 

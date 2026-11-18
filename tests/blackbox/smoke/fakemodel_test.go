@@ -3,6 +3,7 @@
 package smoke
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,24 +138,48 @@ func waitForPermissionPrompt(t *testing.T, env *helper.Env, start int) *bbplatfo
 // click when the prompt carries buttons, a text reply otherwise.
 func answerPermission(t *testing.T, env *helper.Env, prompt *bbplatform.SentMessage, answer string) {
 	t.Helper()
-	action := "perm:" + strings.ReplaceAll(answer, " ", "_")
-	hasButtons := false
-	for _, v := range prompt.ButtonValues() {
-		if v == action {
-			hasButtons = true
-		}
-	}
 	wantButtons := env.Profile != bbplatform.ProfileText && env.Profile != bbplatform.ProfileStreaming
-	if wantButtons != hasButtons {
-		t.Errorf("profile %s: permission prompt buttons=%v, want buttons=%v", env.Profile, prompt.ButtonValues(), wantButtons)
-	}
-	if hasButtons {
+	values := prompt.ButtonValues()
+	if wantButtons {
+		action, err := permissionAction(values, strings.ReplaceAll(answer, " ", "_"))
+		if err != nil {
+			t.Fatalf("profile %s: invalid bound permission buttons: %v", env.Profile, err)
+		}
 		if err := env.Platform.InjectCardAction(helper.DefaultUser, helper.DefaultChat, action); err != nil {
-			t.Fatalf("click %s: %v", action, err)
+			t.Fatalf("permission click failed: %v", err)
 		}
 		return
 	}
+	if len(values) != 0 {
+		t.Fatalf("profile %s unexpectedly rendered permission buttons", env.Profile)
+	}
 	env.SendNoWait(answer)
+}
+
+// Select the exact prompt-bound payload; never synthesize an unbound action
+// or silently fall back to text if a button-capable profile is malformed.
+func permissionAction(values []string, decision string) (string, error) {
+	var promptID, action string
+	for _, value := range values {
+		id, gotDecision, ok := core.ParsePermissionCallback(value)
+		if !ok {
+			return "", fmt.Errorf("malformed permission callback")
+		}
+		if promptID != "" && id != promptID {
+			return "", fmt.Errorf("mixed permission prompts")
+		}
+		promptID = id
+		if gotDecision == decision {
+			if action != "" {
+				return "", fmt.Errorf("duplicate permission decision")
+			}
+			action = value
+		}
+	}
+	if action == "" {
+		return "", fmt.Errorf("requested permission decision missing")
+	}
+	return action, nil
 }
 
 // TestFake_PermissionAllow: a tool call asks for permission; allowing it runs

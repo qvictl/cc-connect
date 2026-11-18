@@ -241,7 +241,7 @@ func (p *MockPlatform) replacePreview(handleID string, change func(*SentMessage)
 // action, in chatID. It follows the same contract as the bridge adapter
 // (core/bridge.go handleCardAction):
 //
-//   - perm:allow / perm:deny / perm:allow_all → a permission response
+//   - perm:<prompt-id>:allow / deny / allow_all → a bound permission response
 //   - askq:… → forwarded as a message with the raw value
 //   - cmd:/x → forwarded as the message "/x"
 //   - nav:… / act:… → the engine's card navigation handler; the card it
@@ -264,16 +264,10 @@ func (p *MockPlatform) InjectCardAction(userID, chatID, action string) error {
 	}
 	switch {
 	case strings.HasPrefix(action, "perm:"):
-		switch action {
-		case "perm:allow":
-			msg.Content = "allow"
-		case "perm:deny":
-			msg.Content = "deny"
-		case "perm:allow_all":
-			msg.Content = "allow all"
-		default:
-			return fmt.Errorf("blackbox mock: unknown permission action %q", action)
+		if _, _, ok := core.ParsePermissionCallback(action); !ok {
+			return fmt.Errorf("blackbox mock: malformed permission callback")
 		}
+		msg.Content = action
 		msg.IsPermissionResponse = true
 	case strings.HasPrefix(action, "askq:"):
 		msg.Content = action

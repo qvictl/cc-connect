@@ -130,7 +130,7 @@ func (e *Env) RequireInProcess() {
 }
 
 // Click simulates DefaultUser clicking a button with callback value action
-// (for example "perm:allow" or "cmd:/list") and waits for the next message.
+// (for example "perm:<prompt-id>:allow" or "cmd:/list") and waits for the next message.
 func (e *Env) Click(action string, timeout time.Duration) *bbplatform.SentMessage {
 	e.T.Helper()
 	before := e.Platform.MessageCount()
