@@ -85,8 +85,30 @@ jobs:
             (cd web && pnpm install --frozen-lockfile && pnpm build)
             go mod download
             go mod verify
+            go vet ./...
+            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags goolm ./...
             go build ./...
             go test ./...
             go test -race ./...
             go test ./core/ -run TestCUJ
           '
+      - name: Prove regressions against old production
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          private_home=$(mktemp -d)
+          env -i PATH="$PATH" HOME="$private_home" LANG=C.UTF-8 CI=true GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org bash -euo pipefail <<'SH'
+          cd ..
+          cp -a candidate negative-control
+          cd negative-control
+          git init -q
+          git fetch --depth=1 https://github.com/qvictl/cc-connect.git 9f2fe81f7d8d4a2457e48a8f67dcc4df75861bcb
+          for file in agent/antigravity/output.go; do git show FETCH_HEAD:"$file" > "$file"; done
+          for name in TestAgyOutputParser_PreservesWhitespaceDeltas; do
+            if go test ./agent/antigravity -run "^$name$" -count=1 > negative.log 2>&1; then
+              cat negative.log; echo "Negative control unexpectedly passed"; exit 1
+            fi
+            cat negative.log
+            grep -F -- "--- FAIL: $name" negative.log
+          done
+          SH
