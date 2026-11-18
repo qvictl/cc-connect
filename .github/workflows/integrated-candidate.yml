@@ -161,7 +161,7 @@ jobs:
           set -euo pipefail
           git init -q
           git add -f .
-          find tests/blackbox -name '*.go' -print0 | xargs -0 gofmt -w
+          gofmt -w tests/blackbox/helper/env.go tests/blackbox/platform/permission_binding_test.go tests/blackbox/platform/profile.go tests/blackbox/smoke/fakemodel_test.go tests/blackbox/smoke/permission_action_test.go
           git diff --binary > ../format.patch
           python3 -c 'import base64,gzip;print("FORMAT_PATCH_55="+base64.b64encode(gzip.compress(open("../format.patch","rb").read())).decode())'
           git checkout -- .
