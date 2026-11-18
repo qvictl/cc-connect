@@ -235,3 +235,7 @@ Available tags: `no_acp`, `no_claudecode`, `no_codex`, `no_copilot`, `no_cursor`
 6. Optionally implement `AgentDoctorInfo` for `cc-connect doctor` support
 7. Add config example in `config.example.toml`
 8. Add unit tests
+
+## Fork CI bootstrap exception
+
+For qvictl/cc-connect branch ci/integrated-candidate-20261118 only, candidate source and CI bootstrap changes may be committed before local build/tests so GitHub Actions can perform validation. This branch is unverified until the exact candidate source digest passes its workflow. All normal test requirements remain gates before release or promotion; no untested version may be published. This exception does not change upstream or the fork's main/dev rules.
