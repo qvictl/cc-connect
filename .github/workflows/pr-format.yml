@@ -1,0 +1,56 @@
+name: Check independent PR formatting
+on:
+  push:
+    branches: [ci/integrated-candidate-20261118]
+    paths: ['.format/request']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  formatting:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache: false
+      - name: Download exact independent source artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for item in 2145:44272562771 2147:44272736824 2085:44272562640 2264:44272562769 2137:44272736798 2129:44272882287 2141:44273041445; do
+            pr=${item%:*}; run=${item#*:}
+            gh run download "$run" --repo qvictl/cc-connect --name "candidate-source-$run" --dir "format/$pr"
+          done
+          gh api 'repos/chenhg5/cc-connect/git/trees/130ca15432a58a5b6873e62482cf93f623548904?recursive=1' > format/base.json
+      - name: Format only changed Go files and report exact patches
+        run: |
+          set -euo pipefail
+          mkdir -p patches
+          python3 - <<'PY'
+          import json,gzip,hashlib,subprocess,pathlib,base64
+          base=json.load(open('format/base.json')); assert not base['truncated']
+          base={f['path']:f['sha'] for f in base['tree'] if f['type']=='blob'}
+          for pr in [2145,2147,2085,2264,2137,2129,2141]:
+              p=pathlib.Path(f'format/{pr}');subprocess.run(['tar','-xzf','candidate-source.tar.gz'],cwd=p,check=True)
+              root=p/'candidate';m=json.load(gzip.open(f'.pr-ci/{pr}/reconstruction.json.gz'))
+              for f in m['files']:
+                  data=(root/f['path']).read_bytes();assert hashlib.sha256(data).hexdigest()==f['sha256'],f['path']
+              subprocess.run(['git','init','-q'],cwd=root,check=True)
+              subprocess.run(['git','add','-f','.'],cwd=root,check=True)
+              changed=[f['path'] for f in m['files'] if f['path'].endswith('.go') and base.get(f['path'])!=f['git_blob']]
+              if changed:subprocess.run(['gofmt','-w',*changed],cwd=root,check=True)
+              patch=subprocess.check_output(['git','diff','--binary'],cwd=root)
+              pathlib.Path(f'patches/pr{pr}.patch').write_bytes(patch)
+              print(f'FORMAT_PATCH_{pr}='+base64.b64encode(gzip.compress(patch)).decode())
+              print(f'PR {pr}: {len(changed)} Go paths inspected; {len(patch)} patch bytes')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: independent-pr-formatting-${{ github.run_id }}
+          path: patches/*.patch
+          if-no-files-found: error
