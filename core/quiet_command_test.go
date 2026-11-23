@@ -1,7 +1,9 @@
 package core
 
 import (
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -20,6 +22,9 @@ func waitSent(p *stubPlatformEngine, n int, d time.Duration) []string {
 
 // A regular exec command that prints nothing still answers "(no output)".
 func TestEngine_ExecCommand_EmptyOutputStillAnswers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a POSIX shell")
+	}
 	e := newTestEngine()
 	e.SetAdminFrom("owner")
 	e.commands.Add("loud", "", "", "true", t.TempDir(), "config")
@@ -34,22 +39,17 @@ func TestEngine_ExecCommand_EmptyOutputStillAnswers(t *testing.T) {
 // A quiet command sends nothing for an empty stdout, no progress message
 // while it runs, its stdout as plain text, and a failure as an error.
 func TestEngine_QuietExecCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a POSIX shell")
+	}
 	e := newTestEngine()
 	e.SetAdminFrom("owner")
 	dir := t.TempDir()
 	// The sleeps outlast quickFinishTimeout, past which a regular exec
 	// command would post a progress message.
-	e.commands.Add("silent", "", "", "sleep 0.8", dir, "config")
-	e.commands.Add("answer", "", "", "sleep 0.6; echo opened {{args}}", dir, "config")
-	e.commands.Add("broken", "", "", "echo nope >&2; exit 3", dir, "config")
-	for _, name := range []string{"silent", "answer", "broken"} {
-		if !e.commands.MarkQuiet(name) {
-			t.Fatalf("MarkQuiet did not find %s", name)
-		}
-	}
-	if e.commands.MarkQuiet("missing") {
-		t.Fatal("MarkQuiet found a command that does not exist")
-	}
+	e.commands.Add("silent", "", "", "sleep 0.8", dir, "config", true)
+	e.commands.Add("answer", "", "", "sleep 0.6; echo opened {{args}}", dir, "config", true)
+	e.commands.Add("broken", "", "", "echo nope >&2; exit 3", dir, "config", true)
 	msg := func() *Message {
 		return &Message{SessionKey: "test:owner", UserID: "owner", ReplyCtx: "ctx"}
 	}
@@ -72,5 +72,53 @@ func TestEngine_QuietExecCommand(t *testing.T) {
 	sent = waitSent(p, 1, 5*time.Second)
 	if len(sent) != 1 || !strings.Contains(sent[0], "exit code 3") || !strings.Contains(sent[0], "nope") {
 		t.Fatalf("expected the failure reported, got %q", sent)
+	}
+}
+
+// Re-registration must publish Quiet with the command, not mutate a pointer
+// already being consumed by executeShellCommand. Run this regression with -race.
+func TestEngine_QuietCommandConcurrentRegistrationAndExecution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a POSIX shell")
+	}
+	e := newTestEngine()
+	dir := t.TempDir()
+	e.AddCommand("quiet", "", "", "true", dir, "config", true)
+	original, ok := e.commands.Resolve("quiet")
+	if !ok || !original.Quiet {
+		t.Fatal("quiet flag was not initialized at registration")
+	}
+	p := &stubPlatformEngine{n: "test"}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 500; i++ {
+			e.AddCommand("quiet", "", "", "true", dir, "config", true)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 30; i++ {
+			cmd, ok := e.commands.Resolve("quiet")
+			if !ok || !cmd.Quiet {
+				t.Error("registration exposed a non-quiet command")
+				return
+			}
+			e.executeShellCommand(p, &Message{ReplyCtx: "ctx"}, cmd, nil)
+		}
+	}()
+	close(start)
+	wg.Wait()
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("quiet execution during registration sent %q", sent)
+	}
+	e.AddCommand("quiet", "", "", "true", dir, "config")
+	current, ok := e.commands.Resolve("quiet")
+	if !ok || current.Quiet || !original.Quiet {
+		t.Fatal("replacement mutated a previously resolved command")
 	}
 }

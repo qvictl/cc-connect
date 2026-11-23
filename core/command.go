@@ -38,8 +38,9 @@ func NewCommandRegistry() *CommandRegistry {
 	}
 }
 
-// Add registers a custom command.
-func (r *CommandRegistry) Add(name, description, prompt, exec, workDir, source string) {
+// Add registers a fully initialized custom command. The optional quiet flag
+// defaults to false; published commands are never mutated by the registry.
+func (r *CommandRegistry) Add(name, description, prompt, exec, workDir, source string, quiet ...bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.commands[strings.ToLower(name)] = &CustomCommand{
@@ -49,19 +50,8 @@ func (r *CommandRegistry) Add(name, description, prompt, exec, workDir, source s
 		Exec:        exec,
 		WorkDir:     workDir,
 		Source:      source,
+		Quiet:       len(quiet) > 0 && quiet[0],
 	}
-}
-
-// MarkQuiet marks a registered command quiet (see CustomCommand.Quiet).
-// It reports whether the command exists.
-func (r *CommandRegistry) MarkQuiet(name string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	cmd, ok := r.commands[strings.ToLower(name)]
-	if ok {
-		cmd.Quiet = true
-	}
-	return ok
 }
 
 // ClearSource removes all commands from a given source (e.g. "config").

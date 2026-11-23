@@ -508,12 +508,7 @@ func main() {
 		}
 
 		// Wire global custom commands
-		for _, c := range cfg.Commands {
-			engine.AddCommand(c.Name, c.Description, c.Prompt, c.Exec, c.WorkDir, "config")
-			if c.Quiet {
-				engine.MarkCommandQuiet(c.Name)
-			}
-		}
+		wireConfiguredCommands(engine, cfg.Commands)
 
 		// Wire command persistence callbacks
 		engine.SetCommandSaveAddFunc(func(name, description, prompt, exec, workDir string) error {
@@ -698,6 +693,12 @@ func main() {
 		// Wire max turn time (absolute per-turn wall-clock cap; 0 = disabled)
 		if cfg.MaxTurnTimeMins != nil && *cfg.MaxTurnTimeMins > 0 {
 			engine.SetMaxTurnTime(time.Duration(*cfg.MaxTurnTimeMins) * time.Minute)
+		}
+
+		// Wire the /stop hook event. Unset keeps the historical default
+		// ("session.ended"); "turn.cancelled" opts in to the precise event.
+		if v := strings.TrimSpace(cfg.StopHookEvent); v != "" {
+			engine.SetStopHookEvent(core.HookEventType(strings.ToLower(v)))
 		}
 
 		// Wire queue depth
@@ -1651,7 +1652,7 @@ type = "feishu"
 
 [projects.platforms.options]
 app_id = "your-feishu-app-id"
-app_secret = "your-feishu-app-secret"
+app_secret = "" # Fill in the app secret before starting.
 
 # For more platforms (DingTalk, Telegram, Slack, Discord, LINE, WeChat Work)
 # see: https://github.com/chenhg5/cc-connect/blob/main/config.example.toml
@@ -1788,6 +1789,14 @@ func setupLogger(level string, w io.Writer) {
 	})))
 }
 
+// wireConfiguredCommands is shared by startup and reload. Quiet is initialized
+// together with the command, before execution can resolve its pointer.
+func wireConfiguredCommands(engine *core.Engine, commands []config.CommandConfig) {
+	for _, c := range commands {
+		engine.AddCommand(c.Name, c.Description, c.Prompt, c.Exec, c.WorkDir, "config", c.Quiet)
+	}
+}
+
 // reloadConfig re-reads config.toml and applies hot-reloadable settings
 // (display, providers, commands) to the given engine.
 func reloadConfig(configPath, projName string, engine *core.Engine) (*core.ConfigReloadResult, error) {
@@ -1882,6 +1891,15 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 		engine.SetInstantReply(core.InstantReplyCfg{})
 	}
 
+	// Reload the /stop hook event. An empty value restores the default
+	// ("session.ended"), so removing the key from config.toml reverts the
+	// behavior just like a fresh start.
+	if v := strings.TrimSpace(cfg.StopHookEvent); v != "" {
+		engine.SetStopHookEvent(core.HookEventType(strings.ToLower(v)))
+	} else {
+		engine.SetStopHookEvent(core.HookEventSessionEnded)
+	}
+
 	// Reload sender injection
 	engine.SetInjectSender(proj.InjectSender != nil && *proj.InjectSender)
 
@@ -1907,12 +1925,7 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 
 	// Reload custom commands
 	engine.ClearCommands("config")
-	for _, c := range cfg.Commands {
-		engine.AddCommand(c.Name, c.Description, c.Prompt, c.Exec, c.WorkDir, "config")
-		if c.Quiet {
-			engine.MarkCommandQuiet(c.Name)
-		}
-	}
+	wireConfiguredCommands(engine, cfg.Commands)
 	result.CommandsUpdated = len(cfg.Commands)
 
 	// Reload aliases
